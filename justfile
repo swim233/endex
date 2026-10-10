@@ -79,6 +79,11 @@ eval *sets: build models
         done
     done
 
+# Phase 0 prototype: the layer-shell popup toggled over D-Bus (org.endex.Ui1.Toggle).
+ui-proto:
+    cmake -S ui/proto -B target/ui-proto -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    cmake --build target/ui-proto
+
 # Evaluate one query file against an index directory.
 eval-file queries data_dir: build
     "{{endex}}" --data-dir "{{data_dir}}" eval "{{queries}}"

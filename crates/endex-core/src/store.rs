@@ -1,7 +1,9 @@
 //! LanceDB table of searchable rows: one per document chunk, one per image.
 
+use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use arrow_array::types::Float32Type;
@@ -20,6 +22,25 @@ use crate::Kind;
 use crate::embed::DIM;
 
 const TABLE: &str = "chunks";
+/// Waits before re-trying a table that exists but cannot be loaded yet.
+const OPEN_RETRY_DELAYS: [Duration; 3] = [
+    Duration::from_millis(100),
+    Duration::from_millis(200),
+    Duration::from_millis(400),
+];
+
+/// The error inside `anyhow::Error` when the table exists but has no loadable version, as at
+/// the start of `endex index --rebuild` in another process.
+#[derive(Debug)]
+pub struct TableUnavailable(pub String);
+
+impl fmt::Display for TableUnavailable {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "the index table cannot be loaded yet: {}", self.0)
+    }
+}
+
+impl std::error::Error for TableUnavailable {}
 
 #[derive(Debug, Clone)]
 pub struct Row {
@@ -39,11 +60,13 @@ pub struct Row {
 
 #[derive(Debug, Clone)]
 pub struct StoredHit {
+    pub id: String,
     pub path: String,
     pub kind: Kind,
     pub title: String,
     pub location: String,
     pub text: String,
+    pub mtime: i64,
     pub score: f32,
 }
 
@@ -54,6 +77,36 @@ pub struct Store {
 impl Store {
     pub async fn open(dir: &Path) -> Result<Self> {
         Self::connect(dir, false).await
+    }
+
+    /// The table if an index run has created it; never creates anything. A table that exists
+    /// but does not load is retried briefly if `retry`, then reported as [`TableUnavailable`].
+    pub async fn open_existing(dir: &Path, retry: bool) -> Result<Option<Self>> {
+        if !dir.is_dir() {
+            return Ok(None);
+        }
+        let db = lancedb::connect(dir.to_str().context("index path is not UTF-8")?)
+            .execute()
+            .await?;
+        let delays: &[Duration] = if retry { &OPEN_RETRY_DELAYS } else { &[] };
+        let mut delays = delays.iter();
+        loop {
+            if !db.table_names().execute().await?.iter().any(|t| t == TABLE) {
+                return Ok(None);
+            }
+            match db.open_table(TABLE).execute().await {
+                Ok(table) => return Ok(Some(Self { table })),
+                Err(error) => match delays.next() {
+                    Some(&delay) => tokio::time::sleep(delay).await,
+                    None => return Err(TableUnavailable(error.to_string()).into()),
+                },
+            }
+        }
+    }
+
+    /// Moves a long-lived reader to the newest version written by another process.
+    pub async fn checkout_latest(&self) -> Result<()> {
+        Ok(self.table.checkout_latest().await?)
     }
 
     /// Drops the endex table (only that) and starts a new, empty one.
@@ -127,6 +180,43 @@ impl Store {
         Ok(self.table.count_rows(Some(kind_filter(kind))).await?)
     }
 
+    pub async fn row(&self, id: &str) -> Result<Option<StoredHit>> {
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(format!("id = {}", quote(id)))
+            .select(Select::columns(HIT_COLUMNS))
+            .limit(1)
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        Ok(hits(&batches, None, |s| s)?.into_iter().next())
+    }
+
+    /// Ids of all rows of one file, in no particular order.
+    pub async fn ids_of(&self, path: &str) -> Result<Vec<String>> {
+        let batches: Vec<RecordBatch> = self
+            .table
+            .query()
+            .only_if(format!("path = {}", quote(path)))
+            .select(Select::columns(&["id"]))
+            .execute()
+            .await?
+            .try_collect()
+            .await?;
+        let mut ids = Vec::new();
+        for batch in &batches {
+            ids.extend(
+                string_column(batch, "id")?
+                    .iter()
+                    .flatten()
+                    .map(str::to_owned),
+            );
+        }
+        Ok(ids)
+    }
+
     /// Exact (flat) cosine search; score = cosine similarity.
     pub async fn vector_search(
         &self,
@@ -146,7 +236,7 @@ impl Store {
             .await?
             .try_collect()
             .await?;
-        hits(&batches, "_distance", |d| 1.0 - d)
+        hits(&batches, Some("_distance"), |d| 1.0 - d)
     }
 
     /// BM25 of the query terms over the `terms` and `name` columns; a row scores the better
@@ -177,11 +267,11 @@ impl Store {
             .await?
             .try_collect()
             .await?;
-        hits(&batches, "_score", |s| s)
+        hits(&batches, Some("_score"), |s| s)
     }
 }
 
-const HIT_COLUMNS: &[&str] = &["path", "kind", "title", "location", "text"];
+const HIT_COLUMNS: &[&str] = &["id", "path", "kind", "title", "location", "text", "mtime"];
 
 fn schema() -> SchemaRef {
     let text = |name| Field::new(name, DataType::Utf8, false);
@@ -230,43 +320,51 @@ fn record_batch(rows: &[Row]) -> Result<RecordBatch> {
     )?)
 }
 
+/// Rows of `HIT_COLUMNS`; without a score column every score is 0.
 fn hits(
     batches: &[RecordBatch],
-    score_column: &str,
+    score_column: Option<&str>,
     score: fn(f32) -> f32,
 ) -> Result<Vec<StoredHit>> {
     let mut out = Vec::new();
     for batch in batches {
-        let string = |name: &str| -> Result<&StringArray> {
-            batch
-                .column_by_name(name)
-                .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-                .with_context(|| format!("missing column {name}"))
-        };
-        let (path, kind, title, location, text) = (
+        let string = |name| string_column(batch, name);
+        let (id, path, kind, title, location, text) = (
+            string("id")?,
             string("path")?,
             string("kind")?,
             string("title")?,
             string("location")?,
             string("text")?,
         );
-        let scores = batch
-            .column_by_name(score_column)
-            .with_context(|| format!("missing column {score_column}"))?;
-        let scores: Vec<f32> = if let Some(a) = scores.as_any().downcast_ref::<Float32Array>() {
-            a.values().to_vec()
-        } else if let Some(a) = scores.as_any().downcast_ref::<Float64Array>() {
-            a.values().iter().map(|&v| v as f32).collect()
-        } else {
-            anyhow::bail!("unexpected type of {score_column}: {}", scores.data_type());
+        let mtime = batch
+            .column_by_name("mtime")
+            .and_then(|c| c.as_any().downcast_ref::<Int64Array>())
+            .context("missing column mtime")?;
+        let scores: Vec<f32> = match score_column {
+            None => vec![0.0; batch.num_rows()],
+            Some(name) => {
+                let scores = batch
+                    .column_by_name(name)
+                    .with_context(|| format!("missing column {name}"))?;
+                if let Some(a) = scores.as_any().downcast_ref::<Float32Array>() {
+                    a.values().to_vec()
+                } else if let Some(a) = scores.as_any().downcast_ref::<Float64Array>() {
+                    a.values().iter().map(|&v| v as f32).collect()
+                } else {
+                    anyhow::bail!("unexpected type of {name}: {}", scores.data_type());
+                }
+            }
         };
         for (i, &raw) in scores.iter().enumerate() {
             out.push(StoredHit {
+                id: id.value(i).to_owned(),
                 path: path.value(i).to_owned(),
                 kind: kind.value(i).parse()?,
                 title: title.value(i).to_owned(),
                 location: location.value(i).to_owned(),
                 text: text.value(i).to_owned(),
+                mtime: mtime.value(i),
                 score: score(raw),
             });
         }
@@ -274,14 +372,22 @@ fn hits(
     Ok(out)
 }
 
+fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a StringArray> {
+    batch
+        .column_by_name(name)
+        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+        .with_context(|| format!("missing column {name}"))
+}
+
 fn kind_filter(kind: Kind) -> String {
     format!("kind = '{}'", kind.as_str())
 }
 
 fn path_filter(paths: &[String]) -> String {
-    let quoted: Vec<String> = paths
-        .iter()
-        .map(|p| format!("'{}'", p.replace('\'', "''")))
-        .collect();
+    let quoted: Vec<String> = paths.iter().map(|p| quote(p)).collect();
     format!("path IN ({})", quoted.join(", "))
+}
+
+fn quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }

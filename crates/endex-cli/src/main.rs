@@ -1,10 +1,11 @@
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::{self, IsTerminal, Write as _};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use endex_core::catalog::Catalog;
 use endex_core::config::{Config, expand_home};
@@ -13,6 +14,7 @@ use endex_core::index::{self, Event, Stage};
 use endex_core::search::{Hit, Mode, Searcher};
 use endex_core::store::Store;
 use endex_core::{Kind, eval, sample};
+use zbus::zvariant::{OwnedValue, Value};
 
 #[derive(Parser)]
 #[command(
@@ -62,6 +64,9 @@ enum Command {
         mode: Mode,
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// Ask the running daemon (endexd), which searches its own index.
+        #[arg(long)]
+        daemon: bool,
     },
     /// Report Recall@k and MRR of every mode for a labelled query file.
     Eval {
@@ -73,6 +78,8 @@ enum Command {
     Status,
     /// Print the resolved configuration, or one value of it (e.g. `endex config data_dir`).
     Config { key: Option<String> },
+    /// Show or hide the search popup; D-Bus starts endex-ui if it is not running.
+    Toggle,
 }
 
 #[tokio::main]
@@ -95,6 +102,25 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<String> {
+    match cli.command {
+        Command::Toggle => return cmd_toggle().await,
+        Command::Search {
+            query,
+            mode,
+            limit,
+            daemon: true,
+        } => {
+            if cli.config.is_some() || cli.data_dir.is_some() {
+                let _ = writeln!(
+                    io::stderr(),
+                    "warning: --config and --data-dir (ENDEX_DATA_DIR) are ignored with --daemon; \
+                     the daemon searches its own index"
+                );
+            }
+            return cmd_search_daemon(&query, mode, limit).await;
+        }
+        _ => {}
+    }
     let config = match &cli.config {
         Some(path) => Config::from_file(path)?,
         None => Config::load()?,
@@ -111,10 +137,13 @@ async fn run(cli: Cli) -> Result<String> {
             device,
             rebuild,
         } => cmd_index(&config, manifests, device, rebuild).await,
-        Command::Search { query, mode, limit } => cmd_search(&config, &query, mode, limit).await,
+        Command::Search {
+            query, mode, limit, ..
+        } => cmd_search(&config, &query, mode, limit).await,
         Command::Eval { queries, limit } => cmd_eval(&config, &queries, limit).await,
         Command::Status => cmd_status(&config).await,
         Command::Config { key } => cmd_config(&config, key.as_deref()),
+        Command::Toggle => unreachable!("handled above"),
     }
 }
 
@@ -181,6 +210,14 @@ async fn cmd_index(
             )
         }
         Event::Progress { .. } => {}
+        Event::Skipped {
+            manifest,
+            line,
+            reason,
+        } => note!(
+            "skipped {}:{line}: {reason}; nothing is removed from the index in this run\n",
+            manifest.display()
+        ),
     };
     let options = index::Options {
         manifests,
@@ -194,6 +231,13 @@ async fn cmd_index(
         "files: {} new, {} modified, {} touched, {} unchanged, {} removed, {} failed, {} unsupported",
         r.new, r.modified, r.touched, r.unchanged, r.removed, r.failed, r.unsupported
     )?;
+    if r.skipped > 0 {
+        writeln!(
+            out,
+            "{} manifest lines skipped (see the warnings above); nothing removed this run",
+            r.skipped
+        )?;
+    }
     if let Some(device) = r.device {
         writeln!(out, "embedding device: {device}")?;
     }
@@ -234,11 +278,54 @@ fn write_stage(out: &mut String, name: &str, stage: &Stage, unit: &str) -> std::
 }
 
 async fn cmd_search(config: &Config, query: &str, mode: Mode, limit: usize) -> Result<String> {
-    let mut searcher = Searcher::open(config).await?;
+    let mut searcher = Searcher::new(config);
     let results = searcher.search(query, mode, limit).await?;
     let mut out = String::new();
     write_group(&mut out, "Documents", &results.docs)?;
     write_group(&mut out, "Images", &results.images)?;
+    Ok(out)
+}
+
+async fn cmd_search_daemon(query: &str, mode: Mode, limit: usize) -> Result<String> {
+    type Dict = HashMap<String, OwnedValue>;
+    let bus = zbus::Connection::session().await?;
+    let limit = Value::from(u32::try_from(limit)?);
+    let opts = HashMap::from([("limit_docs", &limit), ("limit_images", &limit)]);
+    let reply = bus
+        .call_method(
+            Some("org.endex.Daemon1"),
+            "/org/endex/Daemon",
+            Some("org.endex.Daemon1"),
+            "Search",
+            &(query, mode.as_str(), opts),
+        )
+        .await?;
+    let (_, docs, images): (u32, Vec<Dict>, Vec<Dict>) = reply.body().deserialize()?;
+    let hits = |dicts: Vec<Dict>| -> Result<Vec<Hit>> {
+        dicts
+            .iter()
+            .map(|d| {
+                let string = |key| -> Result<String> {
+                    Ok(d.get(key).context(key)?.downcast_ref::<&str>()?.to_owned())
+                };
+                Ok(Hit {
+                    id: string("id")?,
+                    path: string("path")?,
+                    kind: string("kind")?.parse()?,
+                    title: string("title")?,
+                    location: string("location")?,
+                    snippet: string("snippet")?,
+                    score: d.get("score").context("score")?.downcast_ref::<f64>()? as f32,
+                    vector_score: None,
+                    keyword: None,
+                    mtime: 0,
+                })
+            })
+            .collect()
+    };
+    let mut out = String::new();
+    write_group(&mut out, "Documents", &hits(docs)?)?;
+    write_group(&mut out, "Images", &hits(images)?)?;
     Ok(out)
 }
 
@@ -267,7 +354,7 @@ fn write_group(out: &mut String, label: &str, hits: &[Hit]) -> std::fmt::Result 
 
 async fn cmd_eval(config: &Config, queries: &std::path::Path, limit: usize) -> Result<String> {
     let queries = eval::load(queries)?;
-    let mut searcher = Searcher::open(config).await?;
+    let mut searcher = Searcher::new(config);
     let reports = eval::run(&mut searcher, &queries, limit).await?;
     let kinds: Vec<String> = reports
         .first()
@@ -398,6 +485,20 @@ fn cmd_config(config: &Config, key: Option<&str>) -> Result<String> {
         }
     }
     Ok(out)
+}
+
+async fn cmd_toggle() -> Result<String> {
+    zbus::Connection::session()
+        .await?
+        .call_method(
+            Some("org.endex.Ui1"),
+            "/org/endex/Ui",
+            Some("org.endex.Ui1"),
+            "Toggle",
+            &(),
+        )
+        .await?;
+    Ok(String::new())
 }
 
 fn secs(d: Duration) -> String {

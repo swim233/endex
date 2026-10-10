@@ -81,7 +81,7 @@ pub struct ModeReport {
 /// An expected path's rank is its 1-based position in the result group (documents or images)
 /// that contains it.
 pub async fn run(
-    searcher: &mut Searcher<'_>,
+    searcher: &mut Searcher,
     queries: &[Query],
     limit: usize,
 ) -> Result<Vec<ModeReport>> {

@@ -1,0 +1,17 @@
+[Unit]
+Description=Endex search daemon (D-Bus org.endex.Daemon1)
+# Give up after 5 starts within a minute instead of looping on a broken setup.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=dbus
+BusName=org.endex.Daemon1
+ExecStart=@BINDIR@/endexd
+Restart=on-failure
+RestartSec=5
+# Exit status 2: bad config or model, or another endexd owns the name; a restart cannot help.
+RestartPreventExitStatus=2
+
+[Install]
+WantedBy=default.target

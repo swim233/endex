@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.endex.Daemon1
+Exec=@BINDIR@/endexd
+SystemdService=endexd.service

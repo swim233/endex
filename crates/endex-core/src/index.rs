@@ -6,7 +6,7 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, ensure};
 use image::ImageFormat;
 
 use crate::Kind;
@@ -47,6 +47,13 @@ pub enum Event<'a> {
         done: usize,
         total: usize,
     },
+    /// A manifest line that is not an absolute UTF-8 path; the run goes on without it but
+    /// removes nothing.
+    Skipped {
+        manifest: &'a Path,
+        line: usize,
+        reason: &'static str,
+    },
 }
 
 #[derive(Debug, Default)]
@@ -71,6 +78,9 @@ pub struct Report {
     pub removed: usize,
     pub failed: usize,
     pub unsupported: usize,
+    /// Manifest lines that are not absolute UTF-8 paths. If there are any, the run removes
+    /// nothing from the index.
+    pub skipped: usize,
     pub device: Option<Device>,
     pub load: Duration,
     /// Reading, parsing, chunking and keyword analysis; items = chunks.
@@ -113,8 +123,22 @@ pub async fn run(config: &Config, options: &Options, on: &mut dyn FnMut(Event)) 
         report: Report::default(),
     };
 
-    let entries = read_manifests(&options.manifests)?;
-    let removed = removed_paths(&catalog, &options.manifests, &entries)?;
+    let (entries, skipped) = read_manifests(&options.manifests)?;
+    for s in &skipped {
+        on(Event::Skipped {
+            manifest: &s.manifest,
+            line: s.line,
+            reason: s.reason,
+        });
+    }
+    pipeline.report.skipped = skipped.len();
+    // A skipped line can name a file that is still there (a relative path, a name in another
+    // encoding), so with any line skipped nothing counts as removed in this run.
+    let removed = if skipped.is_empty() {
+        removed_paths(&catalog, &options.manifests, &entries)?
+    } else {
+        Vec::new()
+    };
     if !removed.is_empty() {
         let t = Instant::now();
         catalog.set_meta(DIRTY, Some("1"))?;
@@ -450,23 +474,40 @@ fn display_name(path: &Path) -> String {
     }
 }
 
-fn read_manifests(manifests: &[PathBuf]) -> Result<Vec<Entry>> {
+struct SkippedLine {
+    manifest: PathBuf,
+    line: usize,
+    reason: &'static str,
+}
+
+/// Lines are read as bytes: one non-UTF-8 or relative line (a file name with a newline, say)
+/// is skipped instead of failing the whole run.
+fn read_manifests(manifests: &[PathBuf]) -> Result<(Vec<Entry>, Vec<SkippedLine>)> {
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
+    let mut skipped = Vec::new();
     for manifest in manifests {
         let key = manifest_key(manifest)?;
-        let text = fs::read_to_string(manifest)
+        let bytes = fs::read(manifest)
             .with_context(|| format!("reading manifest {}", manifest.display()))?;
-        for line in text.lines().map(str::trim) {
-            if line.is_empty() || line.starts_with('#') {
+        for (i, line) in bytes.split(|&b| b == b'\n').enumerate() {
+            let line = line.trim_ascii();
+            if line.is_empty() || line.starts_with(b"#") {
                 continue;
             }
+            let skip = |reason| SkippedLine {
+                manifest: manifest.clone(),
+                line: i + 1,
+                reason,
+            };
+            let Ok(line) = std::str::from_utf8(line) else {
+                skipped.push(skip("not UTF-8"));
+                continue;
+            };
             let path = expand_home(Path::new(line));
             if !path.is_absolute() {
-                bail!(
-                    "{}: manifest paths must be absolute: {line}",
-                    manifest.display()
-                );
+                skipped.push(skip("not an absolute path"));
+                continue;
             }
             let path = path.to_string_lossy().into_owned();
             if seen.insert(path.clone()) {
@@ -477,7 +518,7 @@ fn read_manifests(manifests: &[PathBuf]) -> Result<Vec<Entry>> {
             }
         }
     }
-    Ok(entries)
+    Ok((entries, skipped))
 }
 
 /// Catalog entries of the given manifests that the manifests no longer list.

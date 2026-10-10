@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 
@@ -10,14 +11,17 @@ use crate::Kind;
 use crate::catalog::Catalog;
 use crate::config::Config;
 use crate::embed::{self, Device, Embedder};
-use crate::store::{Store, StoredHit};
-use crate::terms::Analyzer;
+use crate::store::{Store, StoredHit, TableUnavailable};
+use crate::terms::{Analyzer, is_cjk};
 
 pub const RRF_K: f32 = 60.0;
 /// Chunk candidates fetched per requested file, so that per-file dedup still fills the limit.
 const CANDIDATES_PER_HIT: usize = 4;
 const MAX_CANDIDATES: usize = 10_000;
 const SNIPPET_CHARS: usize = 160;
+/// After a table failed to load, later calls fail fast for this long instead of waiting out the
+/// retries again (a little over the popup's 2 s Status poll).
+const UNAVAILABLE_FAST_FAIL: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -59,12 +63,29 @@ impl FromStr for Mode {
 
 #[derive(Debug, Clone)]
 pub struct Hit {
+    /// The chunk shown for the file.
+    pub id: String,
     pub path: String,
     pub kind: Kind,
     pub title: String,
     pub location: String,
     pub snippet: String,
+    /// RRF score in hybrid mode, cosine similarity in vector mode, BM25 in keyword mode.
     pub score: f32,
+    /// Cosine similarity of the file's best chunk, if the vector side ranked the file.
+    pub vector_score: Option<f32>,
+    /// Set if the keyword side ranked the file.
+    pub keyword: Option<KeywordMatch>,
+    /// Modification time when indexed, in nanoseconds since the epoch.
+    pub mtime: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct KeywordMatch {
+    /// BM25 of the file's best chunk.
+    pub score: f32,
+    /// 1-based rank among the keyword side's files.
+    pub rank: usize,
 }
 
 /// Documents and images are ranked separately: their scores are not comparable.
@@ -72,91 +93,316 @@ pub struct Hit {
 pub struct Results {
     pub docs: Vec<Hit>,
     pub images: Vec<Hit>,
+    /// The analyzed query.
+    pub terms: Vec<String>,
 }
 
-pub struct Searcher<'a> {
-    config: &'a Config,
-    store: Store,
+/// Number of files to return per group.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub docs: usize,
+    pub images: usize,
+}
+
+impl Limits {
+    fn of(self, kind: Kind) -> usize {
+        match kind {
+            Kind::Doc => self.docs,
+            Kind::Image => self.images,
+        }
+    }
+}
+
+/// The error inside `anyhow::Error` when a newer query superseded a search.
+#[derive(Debug)]
+pub struct Cancelled;
+
+impl fmt::Display for Cancelled {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("superseded by a newer query")
+    }
+}
+
+impl std::error::Error for Cancelled {}
+
+/// One row and its neighbours among the rows of the same file.
+#[derive(Debug)]
+pub struct ChunkView {
+    pub row: StoredHit,
+    /// 0-based position among the file's rows, and their number.
+    pub index: usize,
+    pub count: usize,
+    pub prev: Option<String>,
+    pub next: Option<String>,
+}
+
+pub struct Searcher {
+    config: Config,
+    /// `None` until an index run creates the table.
+    store: Option<Store>,
     analyzer: Analyzer,
     embedder: Option<Box<dyn Embedder>>,
+    /// When the table last failed to load.
+    unavailable_at: Option<Instant>,
 }
 
-impl<'a> Searcher<'a> {
-    pub async fn open(config: &'a Config) -> Result<Self> {
-        if config.catalog_path().exists() {
-            Catalog::open(&config.catalog_path())?.check_embedding_identity(
-                &embed::model_identity(config)?,
-                config.embedding.prefix_style.as_str(),
-            )?;
-        }
-        Ok(Self {
-            config,
-            store: Store::open(&config.index_dir()).await?,
+impl Searcher {
+    /// Opens the index lazily: every call first follows changes made by `endex index`.
+    pub fn new(config: &Config) -> Self {
+        Self {
+            config: config.clone(),
+            store: None,
             analyzer: Analyzer::new(),
             embedder: None,
-        })
+            unavailable_at: None,
+        }
+    }
+
+    /// Follows `endex index` runs of other processes: new table versions, a table created
+    /// since, a rebuilt one, or a model change.
+    pub async fn refresh(&mut self) -> Result<()> {
+        let catalog = self.config.catalog_path();
+        if catalog.exists() {
+            Catalog::open_read_only(&catalog)?.check_embedding_identity(
+                &embed::model_identity(&self.config)?,
+                self.config.embedding.prefix_style.as_str(),
+            )?;
+        }
+        if let Some(store) = &self.store
+            && store.checkout_latest().await.is_ok()
+        {
+            return Ok(());
+        }
+        let retry = self
+            .unavailable_at
+            .is_none_or(|at| at.elapsed() > UNAVAILABLE_FAST_FAIL);
+        let opened = Store::open_existing(&self.config.index_dir(), retry).await;
+        self.unavailable_at = match &opened {
+            Err(e) if e.is::<TableUnavailable>() => Some(Instant::now()),
+            _ => None,
+        };
+        self.store = opened?;
+        Ok(())
     }
 
     pub async fn search(&mut self, query: &str, mode: Mode, limit: usize) -> Result<Results> {
-        let vector = match mode {
-            Mode::Keyword => None,
-            Mode::Vector | Mode::Hybrid => Some(self.embed_query(query)?),
+        let limits = Limits {
+            docs: limit,
+            images: limit,
         };
+        self.search_until(query, mode, limits, &|| false).await
+    }
+
+    /// Searches with a limit per group; gives up with [`Cancelled`] between stages once
+    /// `cancelled` returns true.
+    pub async fn search_until(
+        &mut self,
+        query: &str,
+        mode: Mode,
+        limits: Limits,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Results> {
+        let result = self.search_once(query, mode, limits, cancelled).await;
+        if self.reopen_after(&result) {
+            return self.search_once(query, mode, limits, cancelled).await;
+        }
+        result
+    }
+
+    async fn search_once(
+        &mut self,
+        query: &str,
+        mode: Mode,
+        limits: Limits,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Result<Results> {
+        let check = || {
+            if cancelled() {
+                Err(anyhow::Error::new(Cancelled))
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        self.refresh().await?;
         let terms = self.analyzer.terms(query);
         let joined = terms.join(" ");
-        let store = &self.store;
         let mut results = Results::default();
-        for kind in [Kind::Doc, Kind::Image] {
-            let by_vector = match &vector {
-                Some(v) => {
-                    distinct_files(limit, async |n| store.vector_search(v, kind, n).await).await?
-                }
-                None => Vec::new(),
+        if self.store.is_some() {
+            let vector = match mode {
+                Mode::Keyword => None,
+                Mode::Vector | Mode::Hybrid => Some(self.embed_query(query)?),
             };
-            let by_keyword = match mode {
-                Mode::Vector => Vec::new(),
-                Mode::Keyword | Mode::Hybrid => {
-                    distinct_files(limit, async |n| {
-                        store.keyword_search(&joined, kind, n).await
+            let store = self.store.as_ref().expect("checked above");
+            for kind in [Kind::Doc, Kind::Image] {
+                check()?;
+                let limit = limits.of(kind);
+                let by_vector = match &vector {
+                    Some(v) => {
+                        distinct_files(limit, async |n| store.vector_search(v, kind, n).await)
+                            .await?
+                    }
+                    None => Vec::new(),
+                };
+                let by_keyword = match mode {
+                    Mode::Vector => Vec::new(),
+                    Mode::Keyword | Mode::Hybrid => {
+                        distinct_files(limit, async |n| {
+                            store.keyword_search(&joined, kind, n).await
+                        })
+                        .await?
+                    }
+                };
+                let hits = rank(mode, by_vector, by_keyword)
+                    .into_iter()
+                    .take(limit)
+                    .map(|r| Hit {
+                        snippet: snippet(&r.hit.text, &terms, SNIPPET_CHARS),
+                        id: r.hit.id,
+                        path: r.hit.path,
+                        kind: r.hit.kind,
+                        title: r.hit.title,
+                        location: r.hit.location,
+                        score: r.score,
+                        vector_score: r.vector_score,
+                        keyword: r.keyword,
+                        mtime: r.hit.mtime,
                     })
-                    .await?
+                    .collect();
+                match kind {
+                    Kind::Doc => results.docs = hits,
+                    Kind::Image => results.images = hits,
                 }
-            };
-            let ranked = match mode {
-                Mode::Vector => by_vector,
-                Mode::Keyword => by_keyword,
-                Mode::Hybrid => fuse(by_vector, by_keyword),
-            };
-            let hits = ranked
-                .into_iter()
-                .take(limit)
-                .map(|h| Hit {
-                    snippet: snippet(&h.text, &terms, SNIPPET_CHARS),
-                    path: h.path,
-                    kind: h.kind,
-                    title: h.title,
-                    location: h.location,
-                    score: h.score,
-                })
-                .collect();
-            match kind {
-                Kind::Doc => results.docs = hits,
-                Kind::Image => results.images = hits,
             }
         }
+        results.terms = terms;
         Ok(results)
+    }
+
+    /// A row by id, with its position in its file.
+    pub async fn chunk(&mut self, id: &str) -> Result<Option<ChunkView>> {
+        let result = self.chunk_once(id).await;
+        if self.reopen_after(&result) {
+            return self.chunk_once(id).await;
+        }
+        result
+    }
+
+    async fn chunk_once(&mut self, id: &str) -> Result<Option<ChunkView>> {
+        self.refresh().await?;
+        let Some(store) = &self.store else {
+            return Ok(None);
+        };
+        let Some(row) = store.row(id).await? else {
+            return Ok(None);
+        };
+        let mut ids = store.ids_of(&row.path).await?;
+        ids.sort_by_key(|id| chunk_number(id));
+        let index = ids.iter().position(|i| i == id).unwrap_or(0);
+        Ok(Some(ChunkView {
+            prev: index.checked_sub(1).map(|i| ids[i].clone()),
+            next: ids.get(index + 1).cloned(),
+            index,
+            count: ids.len(),
+            row,
+        }))
+    }
+
+    /// Indexed rows of `kind`; 0 before the first index run.
+    pub async fn count(&mut self, kind: Kind) -> Result<usize> {
+        let result = self.count_once(kind).await;
+        if self.reopen_after(&result) {
+            return self.count_once(kind).await;
+        }
+        result
+    }
+
+    async fn count_once(&mut self, kind: Kind) -> Result<usize> {
+        self.refresh().await?;
+        match &self.store {
+            Some(store) => store.count(kind).await,
+            None => Ok(0),
+        }
+    }
+
+    /// After a failure, drops the table so that one retry reopens it: another process may have
+    /// rebuilt the table or pruned the version this reader was on.
+    fn reopen_after<T>(&mut self, result: &Result<T>) -> bool {
+        let retry = matches!(result, Err(e) if e.downcast_ref::<Cancelled>().is_none())
+            && self.store.is_some();
+        if retry {
+            self.store = None;
+        }
+        retry
+    }
+
+    pub fn terms(&self, text: &str) -> Vec<String> {
+        self.analyzer.terms(text)
+    }
+
+    /// Loads the query embedder now instead of on the first query.
+    pub fn warm_up(&mut self) -> Result<()> {
+        self.embed_query("warm-up").map(drop)
     }
 
     /// Queries always embed on the CPU: low latency, no GPU wake-up.
     fn embed_query(&mut self, query: &str) -> Result<Vec<f32>> {
         if self.embedder.is_none() {
-            self.embedder = Some(embed::open(self.config, Device::Cpu)?);
+            self.embedder = Some(embed::open(&self.config, Device::Cpu)?);
         }
         self.embedder
             .as_mut()
             .expect("just created")
             .embed_query(query)
     }
+}
+
+/// Row ids are `path#n`, n counting the file's chunks from 0.
+fn chunk_number(id: &str) -> usize {
+    id.rsplit_once('#')
+        .and_then(|(_, n)| n.parse().ok())
+        .unwrap_or(0)
+}
+
+/// A file's place in the final order, with what each side contributed.
+struct Ranked {
+    /// The chunk shown for the file.
+    hit: StoredHit,
+    score: f32,
+    vector_score: Option<f32>,
+    keyword: Option<KeywordMatch>,
+}
+
+fn rank(mode: Mode, by_vector: Vec<StoredHit>, by_keyword: Vec<StoredHit>) -> Vec<Ranked> {
+    let vector_scores: HashMap<String, f32> = by_vector
+        .iter()
+        .map(|h| (h.path.clone(), h.score))
+        .collect();
+    let keyword_matches: HashMap<String, KeywordMatch> = by_keyword
+        .iter()
+        .enumerate()
+        .map(|(i, h)| {
+            let m = KeywordMatch {
+                score: h.score,
+                rank: i + 1,
+            };
+            (h.path.clone(), m)
+        })
+        .collect();
+    let ordered = match mode {
+        Mode::Vector => by_vector,
+        Mode::Keyword => by_keyword,
+        Mode::Hybrid => fuse(by_vector, by_keyword),
+    };
+    ordered
+        .into_iter()
+        .map(|hit| Ranked {
+            score: hit.score,
+            vector_score: vector_scores.get(&hit.path).copied(),
+            keyword: keyword_matches.get(&hit.path).copied(),
+            hit,
+        })
+        .collect()
 }
 
 /// The best-ranked chunk of each file, at least `limit` files when the index has them:
@@ -256,9 +502,74 @@ fn snippet(text: &str, terms: &[String], max_chars: usize) -> String {
     out
 }
 
+/// Character ranges `(start, len)` of the query terms in `text`, case-insensitive, merged and
+/// in order. CJK terms match anywhere (a single character can be a word). Other terms match at
+/// word starts (after a non-alphanumeric or a CJK character): short ones as whole words, longer
+/// ones also as a prefix, which then covers the rest of the word (`alter` → `altered`); English
+/// stop words are not highlighted.
+pub fn highlights(text: &str, terms: &[String]) -> Vec<(usize, usize)> {
+    let lower: Vec<char> = text
+        .chars()
+        .map(|c| c.to_lowercase().next().unwrap_or(c))
+        .collect();
+    let word_end = |mut i: usize| {
+        while i < lower.len() && lower[i].is_alphanumeric() && !is_cjk(lower[i]) {
+            i += 1;
+        }
+        i
+    };
+    let mut spans = Vec::new();
+    for term in terms {
+        let needle: Vec<char> = term.chars().collect();
+        let cjk = needle.iter().all(|&c| is_cjk(c));
+        if needle.is_empty()
+            || needle.len() > lower.len()
+            || (!cjk && (needle.len() < 2 || EN_STOP_WORDS.contains(&term.as_str())))
+        {
+            continue;
+        }
+        for start in 0..=lower.len() - needle.len() {
+            if lower[start..start + needle.len()] != needle[..] {
+                continue;
+            }
+            let end = start + needle.len();
+            if cjk {
+                spans.push((start, end));
+            } else if start == 0 || !lower[start - 1].is_alphanumeric() || is_cjk(lower[start - 1])
+            {
+                let word = word_end(end);
+                if word == end || needle.len() >= MIN_PREFIX_HIGHLIGHT {
+                    spans.push((start, word));
+                }
+            }
+        }
+    }
+    spans.sort_unstable();
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for (start, end) in spans {
+        match merged.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => merged.push((start, end)),
+        }
+    }
+    merged
+        .into_iter()
+        .map(|(start, end)| (start, end - start))
+        .collect()
+}
+
+const MIN_PREFIX_HIGHLIGHT: usize = 4;
+
+/// Words that match almost anywhere; LanceDB drops them from the keyword index too.
+const EN_STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "are", "as", "at", "be", "but", "by", "for", "from", "has", "have", "if",
+    "in", "into", "is", "it", "its", "no", "not", "of", "on", "or", "such", "that", "the", "their",
+    "then", "there", "these", "they", "this", "to", "was", "were", "will", "with",
+];
+
 #[cfg(test)]
 mod tests {
-    use super::rrf;
+    use super::{highlights, rrf};
 
     #[test]
     fn rrf_rewards_agreement_and_keeps_order_on_ties() {
@@ -271,5 +582,16 @@ mod tests {
             fused.iter().map(|(k, _)| *k).collect::<Vec<_>>(),
             ["x", "y"]
         );
+    }
+
+    #[test]
+    fn highlights_are_case_insensitive_merged_character_ranges() {
+        let terms = ["守护进程", "进程", "dbus", "a", "猫"].map(String::from);
+        let text = "启动守护进程 via D-Bus or DBus, a 猫";
+        assert_eq!(highlights(text, &terms), [(2, 4), (20, 4), (28, 1)]);
+        // Word starts only; short terms whole, longer ones as prefixes; no stop words.
+        let terms = ["the", "alter", "gut", "store", "rust"].map(String::from);
+        let text = "The gut, altered to restore guts 用Rust写";
+        assert_eq!(highlights(text, &terms), [(4, 3), (9, 7), (34, 4)]);
     }
 }

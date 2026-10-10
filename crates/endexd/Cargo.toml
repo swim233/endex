@@ -1,0 +1,15 @@
+[package]
+name = "endexd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+endex-core.workspace = true
+anyhow.workspace = true
+zbus.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
+image = "0.25"
+futures-util = "0.3"

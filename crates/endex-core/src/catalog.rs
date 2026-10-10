@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 use crate::Kind;
 
@@ -90,6 +90,14 @@ impl Catalog {
              );
              CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )?;
+        Ok(Self { conn })
+    }
+
+    /// For readers next to a running indexer: no schema changes, never creates the file.
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("opening {}", path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(2))?;
         Ok(Self { conn })
     }
 
@@ -209,6 +217,13 @@ impl Catalog {
             )?;
         }
         Ok(())
+    }
+
+    /// Unix time of the most recent indexing attempt.
+    pub fn last_indexed(&self) -> Result<Option<i64>> {
+        self.conn
+            .query_row("SELECT MAX(indexed_at) FROM files", [], |r| r.get(0))
+            .map_err(Into::into)
     }
 
     pub fn counts(&self) -> Result<Counts> {

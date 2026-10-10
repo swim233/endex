@@ -1,0 +1,3 @@
+[D-BUS Service]
+Name=org.endex.Ui1
+Exec=@BINDIR@/endex-ui

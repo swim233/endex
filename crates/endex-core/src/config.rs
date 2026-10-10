@@ -122,7 +122,7 @@ impl Config {
     }
 }
 
-fn default_path() -> Result<PathBuf> {
+pub fn default_path() -> Result<PathBuf> {
     Ok(dirs::config_dir()
         .context("no config directory")?
         .join("endex/config.toml"))

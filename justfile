@@ -79,10 +79,48 @@ eval *sets: build models
         done
     done
 
-# Phase 0 prototype: the layer-shell popup toggled over D-Bus (org.endex.Ui1.Toggle).
-ui-proto:
-    cmake -S ui/proto -B target/ui-proto -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
-    cmake --build target/ui-proto
+# Build the popup (target/ui/endex-ui) and run its unit test.
+ui:
+    cmake -S ui -B target/ui -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+    cmake --build target/ui
+    ctest --test-dir target/ui --output-on-failure
+
+# D-Bus integration test: endexd on the smoke-fixture index, on a private session bus.
+dbus-test:
+    test -d "{{fixtures}}/db/index" || just smoke
+    dbus-run-session -- env ENDEX_PRIVATE_BUS=1 cargo test -p endexd --test dbus -- --ignored
+
+# Install for this user only: binaries to ~/.local/bin, D-Bus services, the endexd user unit.
+install: build ui
+    #!/usr/bin/env bash
+    set -euo pipefail
+    bin="$HOME/.local/bin"
+    services="${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services"
+    units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+    mkdir -p "$bin" "$services" "$units"
+    install -m 755 target/release/endex target/release/endexd target/ui/endex-ui "$bin/"
+    for f in org.endex.Daemon1.service org.endex.Ui1.service; do
+        sed "s|@BINDIR@|$bin|" "dist/$f" > "$services/$f"
+    done
+    sed "s|@BINDIR@|$bin|" dist/endexd.service > "$units/endexd.service"
+    systemctl --user daemon-reload
+    systemctl --user try-restart endexd.service
+    # A running popup keeps the old binary; the next `endex toggle` starts the new one.
+    pkill -x endex-ui || true
+    echo "Installed to $bin. Start the daemon at login: systemctl --user enable --now endexd"
+    echo "(without that, D-Bus starts it on the first search). Shortcut: see README."
+
+# Remove what `just install` added; config and index stay.
+uninstall:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    systemctl --user disable --now endexd.service 2>/dev/null || true
+    pkill -x endex-ui || true
+    rm -f "$HOME/.local/bin/"{endex,endexd,endex-ui}
+    rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services/"org.endex.{Daemon1,Ui1}.service
+    rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/endexd.service"
+    systemctl --user daemon-reload
+    echo "Removed. Config (~/.config/endex) and index (~/.local/share/endex) are kept."
 
 # Evaluate one query file against an index directory.
 eval-file queries data_dir: build

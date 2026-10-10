@@ -1,7 +1,8 @@
 # Endex
 
 Local search over documents and images (including text inside screenshots) for one
-Linux desktop. One query, Chinese or English. M1: Rust core + CLI.
+Linux desktop. One query, Chinese or English. M1: Rust core + CLI. M2: a search daemon
+(`endexd`, D-Bus) and a popup (`endex-ui`) for KDE Plasma 6 on Wayland.
 
 ## Setup
 
@@ -9,15 +10,51 @@ Requirements: Rust ≥ 1.95, `just`, `curl`, the EmbeddingGemma 2 LiteRT-LM mode
 `litert-lm` Python wheel (only for its `liblitert-lm.so`), and the HF `tokenizer.json` of the
 same model. Paths live in `~/.config/endex/config.toml`, written with defaults on first run.
 
+The popup also needs Qt ≥ 6.8 (base, declarative, wayland), LayerShellQt, KF6 Kirigami, KIO
+and KWindowSystem, qqc2-desktop-style, CMake and Ninja.
+
 ```sh
-just build     # release build of target/release/endex
-just models    # PP-OCRv6 small det/rec + dictionary (Apache-2.0) → <data_dir>/models/ocr
-just check     # rustfmt --check, clippy -D warnings, unit tests
-just smoke     # synthetic fixtures → isolated index → index (GPU) → eval → status
-just eval      # public datasets: prepare once, index, Recall@10 / MRR per mode (needs uv)
+just build      # release build of target/release/{endex,endexd}
+just models     # PP-OCRv6 small det/rec + dictionary (Apache-2.0) → <data_dir>/models/ocr
+just check      # rustfmt --check, clippy -D warnings, unit tests
+just smoke      # synthetic fixtures → isolated index → index (GPU) → eval → status
+just eval       # public datasets: prepare once, index, Recall@10 / MRR per mode (needs uv)
+just ui         # build target/ui/endex-ui and run its unit test
+just dbus-test  # endexd on the smoke-fixture index, called over a private session bus
 ```
 
 Results and dataset details: [docs/m1-eval.md](docs/m1-eval.md).
+
+## Install (popup and daemon)
+
+```sh
+just install                          # ~/.local/bin, D-Bus service files, endexd user unit
+systemctl --user enable --now endexd  # optional: start at login, model warm for the first search
+```
+
+`just install` touches only user-level paths: `~/.local/bin/{endex,endexd,endex-ui}`,
+`~/.local/share/dbus-1/services/org.endex.{Daemon1,Ui1}.service` and
+`~/.config/systemd/user/endexd.service`. Without the `enable`, D-Bus starts the daemon on the first
+search. `just uninstall` removes these files again (config and index stay).
+
+The popup opens with `endex toggle` (D-Bus starts `endex-ui` if needed). Endex does not write KDE
+shortcut settings; bind a key by hand:
+
+1. System Settings → Keyboard → Shortcuts → Add New → Command or Script.
+2. Command: the absolute path that `echo "$HOME/.local/bin/endex toggle"` prints (it works even if
+   `~/.local/bin` is not on the session's `PATH`; do not rely on `~` being expanded there). Name it
+   e.g. "Endex".
+3. Set the shortcut. Plasma gives Alt+Space to KRunner; either pick another combination such as
+   Meta+Space, or first open Shortcuts → KRunner → "Activate KRunner" and remove Alt+Space there
+   (KRunner keeps Alt+F2), then assign Alt+Space to Endex.
+
+In the popup: type to search (120 ms debounce), Ctrl+1/2/3 for hybrid / vector / keyword, ↑↓ to
+select, Tab to switch between documents and images, PgUp/PgDn to page each group, Enter to open,
+Ctrl+Enter to show in Dolphin, Ctrl+C to copy the path (a normal copy when you selected text in the
+search field), Ctrl+Shift+C to copy the chunk or OCR text, Esc to close a menu and then the popup.
+←→ move the text cursor until you move through the results (↑↓, PgUp/PgDn, Tab or a click); then
+they move in the image grid, until you type again. Clicking outside closes the popup too. The gear
+opens `config.toml` in the default editor.
 
 ## Commands
 
@@ -28,6 +65,9 @@ endex search "查询 query" [--mode hybrid|vector|keyword] [--limit 10]
 endex eval queries.toml [--limit 10]          # Recall@k and MRR per mode and per query kind
 endex status
 endex config [KEY]                            # resolved settings, e.g. `endex config data_dir`
+endex search "…" --daemon                     # ask the running daemon instead (its own index)
+endex toggle                                  # show or hide the popup
+endexd [--config F] [--data-dir D]            # the daemon, in the foreground (normally systemd)
 ```
 
 All commands accept `--config <file>` and `--data-dir <dir>` (or `ENDEX_DATA_DIR`), which keeps
@@ -66,6 +106,9 @@ crates/endex-core   library
   search.rs         vector / keyword / hybrid (RRF k = 60), grouped results
   eval.rs, sample.rs
 crates/endex-cli    the `endex` binary
+crates/endexd       the search daemon: D-Bus interface, search thread
+ui/                 the popup (C++/QML): layer shell, daemon client, paged results, navigation
+dist/               systemd user unit and D-Bus service files (templates for `just install`)
 scripts/gen_fixtures.py   synthetic smoke-test data
 tools/datasets/           public evaluation sets (prepare.py via `uv run`, embed_litert.py)
 ```
@@ -101,3 +144,19 @@ Data: `~/.local/share/endex/{index/, catalog.sqlite, models/ocr/, cache/litert/,
 - **Chunks.** At most 480 model tokens including the heading line (a long heading path is cut
   in the chunk text but kept whole in `location`); over-long lines are split at sentence or
   word breaks using one tokenization of the line.
+- **Daemon.** `endexd` owns `org.endex.Daemon1` at `/org/endex/Daemon` (interface version in the
+  `Version` property): `Search(s query, s mode, a{sv} opts) → (u query_id, aa{sv} docs,
+  aa{sv} images)`, `Preview(s id, s query) → a{sv}` and `Status() → a{sv}`. It is read-only and
+  keeps the CPU query embedder warm on one search thread. Before each call it moves to the newest
+  table version, so `endex index` runs (including `--rebuild`) show up without a restart. A
+  `query_id` from a client cancels that client's older queries between search stages. Results are
+  the CLI's: same ranking, same per-file dedup. Each hit carries the fused `score` plus
+  `vec_score` (cosine) and `kw_score`/`kw_rank` (BM25) when that side ranked the file, and
+  highlight ranges in Unicode characters. Queries are cut at 512 characters. The daemon opens the
+  catalog read-only, yet SQLite (WAL mode) still keeps `catalog.sqlite-wal` and `-shm` next to it;
+  they are expected. A second `endexd` exits instead of taking over the bus name; the unit does
+  not restart on startup errors (exit status 2: config, model, name taken).
+- **Popup.** A LayerShellQt surface on the *top* layer (on *overlay*, KWin stacks the fcitx5
+  candidate window below it). Each show maps it with exclusive keyboard interactivity, so focus
+  does not depend on an activation token; once focused it drops to on-demand, so clicking another
+  window takes focus away and the popup hides.

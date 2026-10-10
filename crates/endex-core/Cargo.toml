@@ -1,0 +1,28 @@
+[package]
+name = "endex-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+libloading = "0.9"
+serde = { version = "1", features = ["derive"] }
+oar-ocr = "0.10"
+image = "0.25"
+# 0.38–0.40 fail to compile without the `remote` feature (job.rs uses a cfg-gated error variant).
+lancedb = "=0.37.1"
+arrow-array = "58"
+arrow-schema = "58"
+futures = "0.3"
+rusqlite = { version = "0.40", features = ["bundled"] }
+jieba-rs = "0.10"
+tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
+quick-xml = "0.42"
+zip = { version = "9", default-features = false, features = ["deflate"] }
+blake3 = "1"
+toml = "1"
+dirs = "6"
+chrono = { version = "0.4", default-features = false }
+walkdir = "2"

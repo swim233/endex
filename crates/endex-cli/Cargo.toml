@@ -1,0 +1,16 @@
+[package]
+name = "endex-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "endex"
+path = "src/main.rs"
+
+[dependencies]
+endex-core.workspace = true
+anyhow.workspace = true
+clap = { version = "4", features = ["derive", "env"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }

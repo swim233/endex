@@ -238,6 +238,12 @@ impl Run {
         };
         run.apply_resources();
         run.check_identity();
+        // Retried on the next start (the version is recorded only with the marks).
+        if let Err(error) = run.check_text_pipeline() {
+            log(&format!(
+                "documents not marked for the new text pipeline: {error:#}"
+            ));
+        }
         let catalog = run.indexer.catalog();
         run.rebuilding = catalog.meta(META_REBUILD)?.is_some();
         // An interrupted run (or rebuild) is finished by scanning everything again.

@@ -8,6 +8,7 @@ use anyhow::Result;
 use endex_core::catalog::{Identity, Mismatch};
 use endex_core::config::Config;
 use endex_core::exclude::Filter;
+use endex_core::index::TEXT_PIPELINE;
 
 use super::{META_REBUILD, META_SCAN_PENDING, Run, log};
 use crate::priority;
@@ -136,6 +137,23 @@ impl Run {
             }
             Err(error) => self.fail(error),
         }
+    }
+
+    /// Documents processed by another text pipeline version go through the current one again,
+    /// by the next scan and with the usual devices; images keep their rows (OCR is slow). Search
+    /// answers from the old rows meanwhile. The scan flag goes first, so that a start
+    /// interrupted at any point still scans.
+    pub(super) fn check_text_pipeline(&self) -> Result<()> {
+        let catalog = self.indexer.catalog();
+        let stored = catalog.text_pipeline()?;
+        if stored != TEXT_PIPELINE {
+            catalog.set_meta(META_SCAN_PENDING, Some("1"))?;
+            let n = catalog.reprocess_documents(TEXT_PIPELINE)?;
+            log(&format!(
+                "text pipeline {stored} -> {TEXT_PIPELINE}: {n} documents will be processed again"
+            ));
+        }
+        Ok(())
     }
 
     /// Rebuilds now, or once a pause (user, battery) ends; until then the index stays.

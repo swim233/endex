@@ -9,6 +9,7 @@ pub mod exclude;
 pub mod index;
 pub mod lock;
 pub mod ocr;
+pub mod packed;
 pub mod parse;
 pub mod sample;
 pub mod scan;

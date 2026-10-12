@@ -167,6 +167,11 @@ impl Run {
     /// Indexes, updates or removes one file, whatever happened to it. A file that is gone is
     /// removed only while its source folder is available.
     fn reconcile(&mut self, path: &str, owner: Option<PathBuf>) -> Result<()> {
+        // Seen again before its last changes were written (a rescan, the watcher): write them
+        // here, with the usual upkeep, so that the catalog is current.
+        if self.indexer.is_staged(path) {
+            self.flush()?;
+        }
         let meta = fs::symlink_metadata(path);
         // Only these mean the file is gone; any other error (a folder made unreadable, a disk
         // error) leaves the file as it is.

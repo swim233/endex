@@ -103,7 +103,7 @@ impl Pipeline {
                 report.unchanged += 1;
                 let prev = prev.expect("unchanged implies a previous record");
                 if prev.owner != owner {
-                    batch.touch();
+                    batch.touch(path_str);
                     batch.records.push(FileRecord {
                         owner: owner.to_owned(),
                         ..prev
@@ -115,7 +115,7 @@ impl Pipeline {
                 report.touched += 1;
                 let prev = prev.expect("touched implies a previous record");
                 (record.hash, record.status, record.error) = (hash, prev.status, prev.error);
-                batch.touch();
+                batch.touch(path_str);
                 batch.records.push(record);
                 return Ok(());
             }
@@ -145,7 +145,7 @@ impl Pipeline {
                 record.error = Some(format!("{error:#}"));
             }
         }
-        batch.touch();
+        batch.touch(path_str);
         batch.paths.push(path_str.to_owned());
         batch.records.push(record);
         Ok(())

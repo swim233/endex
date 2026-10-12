@@ -30,3 +30,7 @@ walkdir = "2"
 ignore = "0.4"
 toml_edit = "0.25"
 libc = "0.2"
+unicode-blocks = "0.1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt", "macros"] }

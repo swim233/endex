@@ -8,6 +8,8 @@ use anyhow::{Context, Result};
 use quick_xml::XmlVersion;
 use quick_xml::events::Event;
 
+use crate::packed;
+
 /// A run of consecutive units under one heading path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Section {
@@ -54,16 +56,27 @@ impl DocFormat {
     }
 }
 
+/// Parses a document; lines (or paragraphs) of packed binary data come out blank, and long
+/// base64 runs cut, in headings and the title too (see [`packed`]).
 pub fn parse(format: DocFormat, path: &Path, bytes: &[u8]) -> Result<Parsed> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    match format {
-        DocFormat::Markdown => Ok(markdown(&String::from_utf8_lossy(bytes), &name)),
-        DocFormat::Plain => Ok(plain(&String::from_utf8_lossy(bytes), &name)),
-        DocFormat::Docx => docx(bytes, &name),
+    let mut parsed = match format {
+        DocFormat::Markdown => markdown(&String::from_utf8_lossy(bytes), &name),
+        DocFormat::Plain => plain(&String::from_utf8_lossy(bytes), &name),
+        DocFormat::Docx => docx(bytes, &name)?,
+    };
+    for section in &mut parsed.sections {
+        packed::clean(&mut section.heading);
+        section.units.iter_mut().for_each(packed::clean);
     }
+    packed::clean(&mut parsed.title);
+    if parsed.title.trim().is_empty() {
+        parsed.title = name;
+    }
+    Ok(parsed)
 }
 
 pub fn markdown(text: &str, fallback_title: &str) -> Parsed {

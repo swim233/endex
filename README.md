@@ -87,8 +87,9 @@ session; opening it again brings it to the front and switches the page). Pages: 
   「需要你决定」 rows for the XDG Documents and Pictures folders (纳入索引 / 不索引, undo); 添加目录… (the
   standard folder dialog, through the KDE portal). A folder that is unplugged or gone shows
   「暂时不可用（文件仍保留在索引中）」.
-- **排除规则:** the four switches, the builtin and sensitive lists, the document size limit, extra
-  rules (one per line) and 检查一个路径 (`CheckPath` against the applied settings).
+- **排除规则:** the four switches, the builtin and sensitive lists (the saved-page rule below is
+  shown as 「网页「另存为」生成的 *_files 文件夹里的 .js .css .html .htm」), the document size limit,
+  extra rules (one per line) and 检查一个路径 (`CheckPath` against the applied settings).
 - **增量与监听:** scan and watch switches, the scan interval, inotify watches in use, the four
   combinations with warnings (watch off: changes wait for the next scan or start; watch only:
   changes while endexd is stopped are missed; both off: nothing updates), and 「立即扫描」 (`Rescan`).
@@ -169,6 +170,7 @@ crates/endex-core   library
   embed/            Embedder trait, prefixes, LiteRT-LM FFI (libloading, RTLD_LOCAL)
   ocr.rs            Ocr trait, PP-OCRv6 via oar-ocr (ONNX Runtime, CPU), noise filter
   parse.rs          Markdown / plain text / docx → sections of numbered lines or paragraphs
+  packed.rs         packed binary data (lookup tables, base64) dropped from document lines
   chunk.rs          sections → chunks of ≤ 480 model tokens
   terms.rs          keyword analysis (jieba + identifier splitting + file-name prefixes)
   catalog.rs        SQLite: files and their owner (manifest or source), change detection, identity
@@ -225,7 +227,10 @@ max_document_mb = 10
 - **Exclusions** (scan, watch and check-path use the same rules, `[exclude]`): `.gitignore` and
   `.ignore` files in the source and, inside a git repository, in its parent folders up to the
   repository's top (`.ignore` outranks `.gitignore`; the innermost folder decides); a builtin
-  list of build output and caches; a sensitive list (keys, credentials, password stores,
+  list of build output and caches, plus the scripts, styles and frames (`.js`, `.css`, `.html`,
+  `.htm`, in any case) at any depth below a folder named `*_files`, which a browser's "Save page
+  as, complete" writes next to the page (its images stay; CheckPath names the rule
+  `**/*_files/**/*.{js,css,html,htm}`); a sensitive list (keys, credentials, password stores,
   keyrings, browser profiles) whose files are never opened; hidden files and folders unless
   `hidden = true`; extra `rules` in gitignore syntax relative to each source. Parent ignore
   files never come from the home folder or above (a dot-file repository there often ignores
@@ -267,6 +272,18 @@ max_document_mb = 10
   style; with another model, searches fail until the rebuild starts). A change during a
   rebuild restarts it. `Rebuild` while indexing is paused (battery, the user) waits, with the
   old index searchable, until the pause ends or 「本次继续」 (`IndexState.rebuild_pending`).
+- **Text pipeline version:** the catalog also records the version of the document text
+  pipeline (`text_pipeline` in its meta table; 1 when missing, i.e. before M3 fix 1; now 2,
+  which drops packed data, see Design notes). When it differs, the writer processes every
+  indexed document again in the background after starting: it records the new version together
+  with marks that make the next scan see each document as changed, so the usual scan, the usual
+  bulk/incremental device choice and the usual write cadence do the work, and an interrupted
+  run resumes instead of starting over. Search answers from the old rows until each file's are
+  replaced; nothing is cleared and `needs_rebuild` is not set. Images are not processed again
+  (OCR is slow). `endex index` records the current version on a new or `--rebuild` index and
+  otherwise leaves the version and unchanged files alone, so an index built from manifests
+  (the eval sets) changes only with `--rebuild`; `endex status` shows the version. A read-only
+  endexd does not look at it.
 - **Writes and keyword index:** small changes are written within a second, bulk work every
   10 s or every 4,096 staged rows (each write adds a table fragment; many small ones slow
   searches down), with a compaction every 30 bulk writes. A new index gets its keyword index
@@ -398,6 +415,26 @@ a fake power state and adds `org.endex.DaemonDebug1.SetOnBattery(b)` on the same
 - **Chunks.** At most 480 model tokens including the heading line (a long heading path is cut
   in the chunk text but kept whole in `location`); over-long lines are split at sentence or
   word breaks using one tokenization of the line.
+- **Packed data.** Before chunking, each line (or docx paragraph) of a document is checked for
+  packed binary data, such as the HTML-entity decode table that JS bundles inline as one string
+  literal: its code points fall into letter ranges, so the analyzer found words such as `cute`
+  between CJK characters and previews showed the string. A line is dropped when it has at
+  least 200 characters (whitespace aside), its letters come from at least 6 scripts, and at
+  least one letter in 8 is directly followed (no space or punctuation between) by a letter of
+  another script; controls and unassigned code points count as one more script, private-use
+  glyphs (icon fonts, Office bullets) as none. Han and kana count as one script; all Latin
+  blocks as one, together with number forms, super- and subscripts and mathematical letters
+  (第Ⅱ章, ℝⁿ, xₖ). Real text switches between two or three scripts (Chinese with English or
+  pinyin, Greek in formulas), and text in many scripts (language lists, i18n bundles) switches
+  at word boundaries, so prose in any language,
+  formulas, emoji, box drawing and minified code stay; the public eval sets and 56 million
+  lines of system text and code files lost none. A dropped line stays as an empty line, so
+  locations keep their line numbers. Base64 runs of at least 256 characters that mix upper and
+  lower case letters and digits (embedded images, fonts, wasm) are replaced by `…`, in
+  headings and titles too, and the rest of the line stays: they are binary data, cost many chunks of embedding and match nothing
+  a user types. Hex strings and long words are not touched. Known limit: a table that the
+  bundler escaped to ASCII (`"\u4026cute\u803b…"`) is not recognized; dropping escape-heavy
+  lines would also drop real JSON written with `\u` escapes.
 - **Daemon.** `endexd` owns `org.endex.Daemon1` at `/org/endex/Daemon` (interface version in the
   `Version` property). It keeps the query embedder warm on one search thread and writes the
   index on another (see above). Before each search it moves to the newest table version, so

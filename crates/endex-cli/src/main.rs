@@ -522,6 +522,16 @@ async fn cmd_status(config: &Config) -> Result<String> {
     if let (Some(model), Some(prefix)) = (catalog.meta("model")?, catalog.meta("prefix_style")?) {
         writeln!(out, "index built   {model}, prefix style {prefix}")?;
     }
+    let pipeline = catalog.text_pipeline()?;
+    let note = if pipeline == index::TEXT_PIPELINE {
+        String::new()
+    } else {
+        format!(
+            " (current {}: endexd processes its documents again, `endex index` with --rebuild)",
+            index::TEXT_PIPELINE
+        )
+    };
+    writeln!(out, "text pipeline {pipeline}{note}")?;
     let counts = catalog.counts()?;
     let files: Vec<String> = counts.ok.iter().map(|(k, n)| format!("{n} {k}")).collect();
     let files = if files.is_empty() {

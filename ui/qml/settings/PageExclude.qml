@@ -28,6 +28,11 @@ Kirigami.FormLayout {
         encoding: qsTr("文件名不是有效的 UTF-8"),
         too_large: qsTr("超过单个文档大小上限"),
     })
+    // Builtin patterns shown as a description instead of the pattern; keyed by the pattern as
+    // in exclude.rs (SAVED_PAGE_CODE), so a changed pattern shows as itself.
+    readonly property var builtinLabels: ({
+        "**/*_files/**/*.{js,css,html,htm}": qsTr("网页「另存为」生成的 *_files 文件夹里的 .js .css .html .htm"),
+    })
     property var checked: ({})
 
     function describe(r) {
@@ -40,7 +45,9 @@ Kirigami.FormLayout {
         let why = reasons[r.reason] ?? r.reason
         if (r.reason === "gitignore")
             why = why.arg(r.file).arg(r.rule)
-        else if (["sensitive", "builtin", "rule"].includes(r.reason))
+        else if (r.reason === "builtin")
+            why = why.arg(builtinLabels[r.rule] ?? r.rule)
+        else if (["sensitive", "rule"].includes(r.reason))
             why = why.arg(r.rule)
         return [false, qsTr("不会被索引：%1").arg(why)]
     }
@@ -85,11 +92,13 @@ Kirigami.FormLayout {
             settings: page.settings
             key: "exclude.builtin"
             text: qsTr("排除常见的构建产物和缓存")
-            hint: qsTr("一份内置清单，例如 node_modules、target、.git。")
+            hint: qsTr("一份内置清单，例如 node_modules、target、.git，以及网页「另存为」附带的 .js、.css、.html。")
         }
         PatternList {
+            objectName: "builtinList"
             label: qsTr("查看内置清单")
             patterns: page.settings.saved["exclude.builtin_list"] ?? []
+            labels: page.builtinLabels
         }
     }
     ColumnLayout {
@@ -105,6 +114,7 @@ Kirigami.FormLayout {
             hint: qsTr("命中的文件连内容都不会读取。")
         }
         PatternList {
+            objectName: "sensitiveList"
             label: qsTr("查看规则")
             patterns: page.settings.saved["exclude.sensitive_list"] ?? []
         }
@@ -228,6 +238,7 @@ Kirigami.FormLayout {
 
         property string label
         property var patterns: []
+        property var labels: ({})
 
         Layout.fillWidth: true
         spacing: Kirigami.Units.smallSpacing
@@ -235,6 +246,7 @@ Kirigami.FormLayout {
         QQC2.ToolButton {
             id: expand
 
+            objectName: list.objectName + ".expand"
             text: list.label
             icon.name: expand.checked ? "arrow-down" : "arrow-right"
             checkable: true
@@ -250,7 +262,7 @@ Kirigami.FormLayout {
                 KeyCap {
                     required property string modelData
 
-                    text: modelData
+                    text: list.labels[modelData] ?? modelData
                 }
             }
         }

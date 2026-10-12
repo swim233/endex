@@ -13,6 +13,7 @@ use crate::embed;
 
 pub const STATUS_OK: &str = "ok";
 pub const STATUS_ERROR: &str = "error";
+const META_TEXT_PIPELINE: &str = "text_pipeline";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileRecord {
@@ -366,6 +367,35 @@ impl Catalog {
             self.set_meta(key, Some(value))?;
         }
         Ok(())
+    }
+
+    /// The text pipeline version ([`crate::index::TEXT_PIPELINE`]) of the indexed documents;
+    /// 1 for catalogs from before it was recorded.
+    pub fn text_pipeline(&self) -> Result<u32> {
+        Ok(self
+            .meta(META_TEXT_PIPELINE)?
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1))
+    }
+
+    pub fn set_text_pipeline(&self, version: u32) -> Result<()> {
+        self.set_meta(META_TEXT_PIPELINE, Some(&version.to_string()))
+    }
+
+    /// Makes scans process every indexed document again (size and mtime no longer match) and
+    /// records `version` with it; returns how many documents.
+    pub fn reprocess_documents(&self, version: u32) -> Result<usize> {
+        let tx = self.conn.unchecked_transaction()?;
+        let n = tx.execute(
+            "UPDATE files SET mtime = -1, hash = '' WHERE kind = 'doc' AND status = 'ok'",
+            [],
+        )?;
+        tx.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES (?1, ?2)",
+            params![META_TEXT_PIPELINE, version.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(n)
     }
 
     /// Unix time of the most recent indexing attempt.

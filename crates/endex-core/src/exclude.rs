@@ -16,7 +16,7 @@ use crate::Kind;
 use crate::config::{Config, SourceKind};
 use crate::index::kind_of;
 
-/// Build output, caches and lock files.
+/// Build output, caches, lock files, and the code of saved web pages.
 pub const BUILTIN: &[&str] = &[
     ".git/",
     ".hg/",
@@ -39,7 +39,13 @@ pub const BUILTIN: &[&str] = &[
     "*.min.css",
     "package-lock.json",
     "pnpm-lock.yaml",
+    SAVED_PAGE_CODE,
 ];
+
+/// Scripts, styles and frames anywhere below a folder that a browser's "Save page as,
+/// complete" writes next to the page (`<page>_files/`); its images stay. Matched in any case
+/// (`Page_Files/APP.JS`), unlike the other builtin patterns.
+pub const SAVED_PAGE_CODE: &str = "**/*_files/**/*.{js,css,html,htm}";
 
 /// Keys, credentials, password stores, keyrings and browser profiles.
 pub const SENSITIVE: &[&str] = &[
@@ -178,6 +184,7 @@ pub struct SourceRules {
     pub kind: SourceKind,
     sensitive: Option<Gitignore>,
     builtin: Option<Gitignore>,
+    builtin_any_case: Option<Gitignore>,
     extra: Gitignore,
     /// Ignore files above the root, up to the enclosing git repository's top folder.
     parents: Chain,
@@ -205,13 +212,21 @@ impl Filter {
         };
         for source in &config.index.sources {
             let root = source.root();
-            let list = |enabled: bool, patterns: &[&str]| -> Result<Option<Gitignore>> {
-                enabled.then(|| matcher(&root, patterns)).transpose()
+            let list = |enabled: bool, patterns: &[&str], any_case| -> Result<Option<Gitignore>> {
+                enabled
+                    .then(|| matcher(&root, patterns, any_case))
+                    .transpose()
             };
+            let exact: Vec<&str> = BUILTIN
+                .iter()
+                .copied()
+                .filter(|p| *p != SAVED_PAGE_CODE)
+                .collect();
             let rules = SourceRules {
-                sensitive: list(e.sensitive, SENSITIVE)?,
-                builtin: list(e.builtin, BUILTIN)?,
-                extra: matcher(&root, &e.rules)?,
+                sensitive: list(e.sensitive, SENSITIVE, false)?,
+                builtin: list(e.builtin, &exact, false)?,
+                builtin_any_case: list(e.builtin, &[SAVED_PAGE_CODE], true)?,
+                extra: matcher(&root, &e.rules, false)?,
                 parents: if e.gitignore {
                     filter.parent_chain(&root)
                 } else {
@@ -329,7 +344,7 @@ impl Filter {
         if let Some(p) = hit(&source.sensitive) {
             return Err(Reason::Sensitive(p));
         }
-        if let Some(p) = hit(&source.builtin) {
+        if let Some(p) = hit(&source.builtin).or_else(|| hit(&source.builtin_any_case)) {
             return Err(Reason::Builtin(p));
         }
         let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -428,11 +443,12 @@ pub fn file_kind(source: &SourceRules, path: &Path) -> Result<Included, Reason> 
 
 /// Whether `rule` is valid gitignore syntax.
 pub fn check_rule(rule: &str) -> Result<()> {
-    matcher(Path::new("/"), &[rule]).map(drop)
+    matcher(Path::new("/"), &[rule], false).map(drop)
 }
 
-fn matcher<S: AsRef<str>>(root: &Path, patterns: &[S]) -> Result<Gitignore> {
+fn matcher<S: AsRef<str>>(root: &Path, patterns: &[S], any_case: bool) -> Result<Gitignore> {
     let mut builder = GitignoreBuilder::new(root);
+    builder.case_insensitive(any_case)?;
     for pattern in patterns {
         let pattern = pattern.as_ref();
         builder
@@ -479,6 +495,13 @@ mod tests {
             ("repo/notes/sub/backup/d.md", ""),
             ("repo/notes/shot.png", ""),
             ("repo/notes/data.bin", ""),
+            ("repo/notes/lib.js", ""),
+            ("repo/notes/Saved Page_files/app.js", ""),
+            ("repo/notes/Saved Page_files/frames/f.htm", ""),
+            ("repo/notes/Saved Page_files/notes.md", ""),
+            ("repo/notes/Saved Page_files/logo.png", ""),
+            ("repo/notes/sub/x_files/s.css", ""),
+            ("repo/notes/P_Files/APP.JS", ""),
         ]);
         let notes = dir.join("repo/notes");
         let mut config = Config::parse(
@@ -510,6 +533,18 @@ mod tests {
             Err(Reason::Rule("backup/".into()))
         );
         assert_eq!(check("shot.png"), Err(Reason::Kind(SourceKind::Docs)));
+        let saved_page = Err(Reason::Builtin(SAVED_PAGE_CODE.into()));
+        assert_eq!(check("Saved Page_files/app.js"), saved_page);
+        assert_eq!(check("Saved Page_files/frames/f.htm"), saved_page);
+        assert_eq!(check("sub/x_files/s.css"), saved_page);
+        assert_eq!(check("P_Files/APP.JS"), saved_page);
+        assert!(check("Saved Page_files/notes.md").is_ok());
+        assert!(check("lib.js").is_ok());
+        // Not excluded as builtin: only the source's kind (documents) leaves the image out.
+        assert_eq!(
+            check("Saved Page_files/logo.png"),
+            Err(Reason::Kind(SourceKind::Docs))
+        );
         assert_eq!(check("data.bin"), Err(Reason::Unsupported));
         assert_eq!(
             filter.check(&dir.join("repo/other.md")),

@@ -2,6 +2,7 @@
 //! and removed files and writes them in batches; [`run`] drives it from manifests
 //! (`endex index`), endexd from its source folders.
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -22,6 +23,12 @@ pub use manifest::{Options, run};
 use pipeline::Pipeline;
 
 pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
+
+/// Version of the document text pipeline (parsing, the packed-data filter, chunking); bump it
+/// when documents already indexed should go through a change. A new or emptied index records
+/// it; endexd processes the documents of an index with another version again, `endex index`
+/// does not (`--rebuild` does). 1: M1–M3; 2: packed data dropped.
+pub const TEXT_PIPELINE: u32 = 2;
 
 const FLUSH_ROWS: usize = 256;
 const FLUSH_FILES: usize = 64;
@@ -122,6 +129,9 @@ impl Indexer {
         } else {
             Store::open(&config.index_dir()).await?
         };
+        if catalog.file_count()? == 0 {
+            catalog.set_text_pipeline(TEXT_PIPELINE)?;
+        }
         Ok(Self {
             catalog,
             store,
@@ -209,13 +219,17 @@ impl Indexer {
 
     /// Detects what changed for one file and stages the outcome; flushes a full batch. File
     /// failures are recorded in the catalog (and drop stale rows); failing to load a model
-    /// is an error.
+    /// is an error. A file with changes staged already (seen again by a rescan or the watcher
+    /// before the write) is written first, so that it is compared with them, not staged twice.
     pub async fn update(
         &mut self,
         path: &str,
         owner: &str,
         on: &mut dyn FnMut(Event),
     ) -> Result<()> {
+        if self.is_staged(path) {
+            self.flush().await?;
+        }
         let prev = self.catalog.get(path)?;
         self.pipeline
             .visit(path, owner, prev, &mut self.batch, &mut self.report, on)?;
@@ -225,10 +239,14 @@ impl Indexer {
         Ok(())
     }
 
-    /// Stages the removal of indexed files; flushes a full batch.
+    /// Stages the removal of indexed files; flushes a full batch. Changes staged for one of
+    /// them are written first.
     pub async fn remove(&mut self, paths: &[String]) -> Result<()> {
         for path in paths {
-            self.batch.touch();
+            if self.is_staged(path) {
+                self.flush().await?;
+            }
+            self.batch.touch(path);
             self.batch.paths.push(path.clone());
             self.batch.removed.push(path.clone());
             self.batch.dirty = true;
@@ -238,6 +256,11 @@ impl Indexer {
             }
         }
         Ok(())
+    }
+
+    /// Whether `path` has changes waiting for [`Indexer::flush`].
+    pub fn is_staged(&self, path: &str) -> bool {
+        self.batch.staged.contains(path)
     }
 
     /// Whether staged changes wait for [`Indexer::flush`], and since when.
@@ -301,21 +324,22 @@ impl Indexer {
         Ok(())
     }
 
-    /// Empties the index (table, then catalog) and records `identity` for what follows. Meta
-    /// flags other than the identity stay.
+    /// Empties the index (table, then catalog) and records `identity` and the text pipeline
+    /// for what follows. Other meta flags stay.
     pub async fn clear(&mut self, identity: &Identity) -> Result<()> {
         self.batch = Batch::default();
         self.catalog.set_meta(CLEARING, Some("1"))?;
         self.store = Store::reset(&self.pipeline.config.index_dir()).await?;
         self.catalog.clear_files()?;
         self.catalog.set_identity(identity)?;
+        self.catalog.set_text_pipeline(TEXT_PIPELINE)?;
         self.catalog.set_meta(DIRTY, None)?;
         self.catalog.set_meta(CLEARING, None)
     }
 
     /// Records a file that could not be processed at all (e.g. a panic in a parser).
     pub fn record_failure(&mut self, path: &str, owner: &str, error: &str) {
-        self.batch.touch();
+        self.batch.touch(path);
         self.batch.records.push(FileRecord {
             path: path.to_owned(),
             kind: kind_of(Path::new(path)).unwrap_or(Kind::Doc),
@@ -343,6 +367,8 @@ struct Batch {
     /// not trigger the post-run compaction and index build.
     dirty: bool,
     since: Option<Instant>,
+    /// Every path above.
+    staged: HashSet<String>,
 }
 
 impl Batch {
@@ -352,8 +378,9 @@ impl Batch {
             || self.removed.len() >= FLUSH_REMOVALS
     }
 
-    fn touch(&mut self) {
+    fn touch(&mut self, path: &str) {
         self.since.get_or_insert_with(Instant::now);
+        self.staged.insert(path.to_owned());
     }
 }
 
@@ -377,4 +404,54 @@ pub fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::embed::{DIM, Embedder};
+
+    struct Constant;
+
+    impl Embedder for Constant {
+        fn device(&self) -> Device {
+            Device::Cpu
+        }
+        fn embed_query(&mut self, _: &str) -> Result<Vec<f32>> {
+            Ok(vec![0.5; DIM])
+        }
+        fn embed_document(&mut self, _: &str) -> Result<Vec<f32>> {
+            Ok(vec![0.5; DIM])
+        }
+        fn embed_image(&mut self, _: &[u8]) -> Result<Vec<f32>> {
+            Ok(vec![0.5; DIM])
+        }
+    }
+
+    #[tokio::test]
+    async fn a_file_seen_twice_before_a_write_has_one_set_of_rows() {
+        let dir = std::env::temp_dir().join(format!("endex-index-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let image = dir.join("a.png");
+        image::RgbImage::new(4, 4).save(&image).unwrap();
+        let mut config = Config::parse(
+            "[embedding]\nlibrary = \"/l\"\nmodel = \"/m\"\ntokenizer = \"/t\"\n\
+             [ocr]\nenabled = false\n",
+        )
+        .unwrap();
+        config.data_dir = dir.join("data");
+        let mut indexer = Indexer::open(&config, false).await.unwrap();
+        indexer.set_auto_flush(false);
+        indexer.pipeline.embedder = Some(Box::new(Constant));
+        let path = image.to_str().unwrap();
+        // As when a rescan queues a file again whose rows are not written yet.
+        for _ in 0..2 {
+            indexer.update(path, "src", &mut |_| {}).await.unwrap();
+        }
+        indexer.flush().await.unwrap();
+        assert_eq!(indexer.store().count(Kind::Image).await.unwrap(), 1);
+        assert_eq!(indexer.report.new, 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
 }

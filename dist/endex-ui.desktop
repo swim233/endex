@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Endex Settings
+Name[zh_CN]=Endex 设置
+Comment=Folders, exclusions, index state and resources of the Endex search
+Comment[zh_CN]=Endex 搜索的索引目录、排除规则、索引状态和资源档位
+Exec=@BINDIR@/endex settings
+Icon=system-search
+Categories=Utility;
+Keywords=search;index;endex;搜索;索引;
+StartupNotify=true

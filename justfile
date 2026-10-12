@@ -88,20 +88,23 @@ ui:
 # D-Bus integration test: endexd on the smoke-fixture index, on a private session bus.
 dbus-test:
     test -d "{{fixtures}}/db/index" || just smoke
-    dbus-run-session -- env ENDEX_PRIVATE_BUS=1 cargo test -p endexd --test dbus -- --ignored
+    dbus-run-session -- env ENDEX_PRIVATE_BUS=1 cargo test -p endexd --test dbus -- --ignored --test-threads=1
 
-# Install for this user only: binaries to ~/.local/bin, D-Bus services, the endexd user unit.
+# Install for this user only: binaries to ~/.local/bin, D-Bus services, the endexd user unit and
+# the settings window's app menu entry.
 install: build ui
     #!/usr/bin/env bash
     set -euo pipefail
     bin="$HOME/.local/bin"
     services="${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services"
+    apps="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
     units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
-    mkdir -p "$bin" "$services" "$units"
+    mkdir -p "$bin" "$services" "$apps" "$units"
     install -m 755 target/release/endex target/release/endexd target/ui/endex-ui "$bin/"
     for f in org.endex.Daemon1.service org.endex.Ui1.service; do
         sed "s|@BINDIR@|$bin|" "dist/$f" > "$services/$f"
     done
+    sed "s|@BINDIR@|$bin|" dist/endex-ui.desktop > "$apps/endex-ui.desktop"
     sed "s|@BINDIR@|$bin|" dist/endexd.service > "$units/endexd.service"
     systemctl --user daemon-reload
     systemctl --user try-restart endexd.service
@@ -118,6 +121,7 @@ uninstall:
     pkill -x endex-ui || true
     rm -f "$HOME/.local/bin/"{endex,endexd,endex-ui}
     rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/dbus-1/services/"org.endex.{Daemon1,Ui1}.service
+    rm -f "${XDG_DATA_HOME:-$HOME/.local/share}/applications/endex-ui.desktop"
     rm -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/endexd.service"
     systemctl --user daemon-reload
     echo "Removed. Config (~/.config/endex) and index (~/.local/share/endex) are kept."

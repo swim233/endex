@@ -6,15 +6,17 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use endex_core::catalog::Catalog;
 use endex_core::config::{Config, expand_home};
 use endex_core::embed::{self, Device};
 use endex_core::index::{self, Event, Stage};
 use endex_core::search::{Hit, Mode, Searcher};
 use endex_core::store::Store;
-use endex_core::{Kind, eval, sample};
+use endex_core::{Kind, eval, lock, sample};
 use zbus::zvariant::{OwnedValue, Value};
+
+mod eval_sets;
 
 #[derive(Parser)]
 #[command(
@@ -68,11 +70,23 @@ enum Command {
         #[arg(long)]
         daemon: bool,
     },
-    /// Report Recall@k and MRR of every mode for a labelled query file.
+    /// Report Recall@k and MRR of every mode for a labelled query file, or for the public sets.
+    /// Never writes into the evaluated index.
     Eval {
-        queries: PathBuf,
+        #[arg(required_unless_present = "sets")]
+        queries: Option<PathBuf>,
         #[arg(long, default_value_t = 10)]
         limit: usize,
+        /// Evaluate every public set prepared by `just eval` under <data_dir>/eval/ and save
+        /// the results to <data_dir>/eval-results/last.json.
+        #[arg(long, conflicts_with = "queries")]
+        sets: bool,
+        /// With --sets: show the saved results of the last run instead of running.
+        #[arg(long, requires = "sets")]
+        saved: bool,
+        /// With --sets: print the results as JSON (`null` if --saved finds none).
+        #[arg(long, requires = "sets")]
+        json: bool,
     },
     /// Show index counts, model identity and locations.
     Status,
@@ -80,6 +94,24 @@ enum Command {
     Config { key: Option<String> },
     /// Show or hide the search popup; D-Bus starts endex-ui if it is not running.
     Toggle,
+    /// Open the settings window, optionally on one page.
+    Settings {
+        #[arg(value_enum)]
+        page: Option<SettingsPage>,
+    },
+}
+
+/// The settings window's pages, in its order.
+#[derive(Clone, Copy, ValueEnum)]
+enum SettingsPage {
+    Dirs,
+    Exclude,
+    Watch,
+    Model,
+    Status,
+    Shortcut,
+    Resource,
+    Eval,
 }
 
 #[tokio::main]
@@ -103,7 +135,16 @@ async fn main() -> ExitCode {
 
 async fn run(cli: Cli) -> Result<String> {
     match cli.command {
-        Command::Toggle => return cmd_toggle().await,
+        Command::Toggle => return call_ui("Toggle", &()).await,
+        Command::Settings { page } => {
+            let page = page.map(|p| p.to_possible_value().expect("no skipped pages"));
+            let page = page.as_ref().map_or("", |p| p.get_name());
+            // Started from the app menu, the launcher's token lets the window come to the front.
+            return match std::env::var("XDG_ACTIVATION_TOKEN") {
+                Ok(token) if !token.is_empty() => call_ui("ActivateSettings", &(page, token)).await,
+                _ => call_ui("ShowSettings", &(page,)).await,
+            };
+        }
         Command::Search {
             query,
             mode,
@@ -140,10 +181,19 @@ async fn run(cli: Cli) -> Result<String> {
         Command::Search {
             query, mode, limit, ..
         } => cmd_search(&config, &query, mode, limit).await,
-        Command::Eval { queries, limit } => cmd_eval(&config, &queries, limit).await,
+        Command::Eval {
+            sets: true,
+            limit,
+            saved,
+            json,
+            ..
+        } => cmd_eval_sets(&config, limit, saved, json).await,
+        Command::Eval { queries, limit, .. } => {
+            cmd_eval(&config, &queries.expect("required"), limit).await
+        }
         Command::Status => cmd_status(&config).await,
         Command::Config { key } => cmd_config(&config, key.as_deref()),
-        Command::Toggle => unreachable!("handled above"),
+        Command::Toggle | Command::Settings { .. } => unreachable!("handled above"),
     }
 }
 
@@ -219,6 +269,24 @@ async fn cmd_index(
             manifest.display()
         ),
     };
+    // The data dir's own index belongs to endexd, also while it is not running: its next
+    // start would drop rows of no configured folder.
+    if config.index_root.is_none() {
+        bail!(
+            "endex index 不写入 {} 里的索引：那是 endexd 的索引，由它按设置窗口里的目录维护。\
+             要用命令行建索引，请用 --data-dir 指定另一个目录。",
+            config.data_dir.display()
+        );
+    }
+    let _lock = lock::WriterLock::acquire(config).map_err(|error| match error.downcast::<lock::Locked>() {
+        Ok(locked) => anyhow::anyhow!(
+            "索引目录 {} 正被另一个进程写入（{}通常是 endexd）。endexd 运行时只有它能写入自己的索引：\
+             请在设置窗口里管理索引目录或重建索引；要用命令行建索引，请用 --data-dir 指定另一个目录。",
+            locked.dir.display(),
+            locked.pid.map_or(String::new(), |pid| format!("进程号 {pid}，"))
+        ),
+        Err(error) => error,
+    })?;
     let options = index::Options {
         manifests,
         device,
@@ -354,7 +422,7 @@ fn write_group(out: &mut String, label: &str, hits: &[Hit]) -> std::fmt::Result 
 
 async fn cmd_eval(config: &Config, queries: &std::path::Path, limit: usize) -> Result<String> {
     let queries = eval::load(queries)?;
-    let mut searcher = Searcher::new(config);
+    let mut searcher = Searcher::untouched(config);
     let reports = eval::run(&mut searcher, &queries, limit).await?;
     let kinds: Vec<String> = reports
         .first()
@@ -413,6 +481,25 @@ async fn cmd_eval(config: &Config, queries: &std::path::Path, limit: usize) -> R
     Ok(out)
 }
 
+async fn cmd_eval_sets(config: &Config, limit: usize, saved: bool, json: bool) -> Result<String> {
+    let results = if saved {
+        eval_sets::load(config)?
+    } else {
+        let results = eval_sets::run(config, limit).await?;
+        let path = eval_sets::save(config, &results)?;
+        note!("saved to {}\n", path.display());
+        Some(results)
+    };
+    match (results, json) {
+        (results, true) => Ok(serde_json::to_string(&results)? + "\n"),
+        (Some(results), false) => eval_sets::table(&results),
+        (None, false) => Ok(format!(
+            "No saved results yet ({}).\n",
+            eval_sets::results_path(config).display()
+        )),
+    }
+}
+
 async fn cmd_status(config: &Config) -> Result<String> {
     let mut out = String::new();
     writeln!(out, "data dir      {}", config.data_dir.display())?;
@@ -430,7 +517,8 @@ async fn cmd_status(config: &Config) -> Result<String> {
         )?;
         return Ok(out);
     }
-    let catalog = Catalog::open(&config.catalog_path())?;
+    // Read-only: endexd may be writing this index right now.
+    let catalog = Catalog::open_read_only(&config.catalog_path())?;
     if let (Some(model), Some(prefix)) = (catalog.meta("model")?, catalog.meta("prefix_style")?) {
         writeln!(out, "index built   {model}, prefix style {prefix}")?;
     }
@@ -446,13 +534,14 @@ async fn cmd_status(config: &Config) -> Result<String> {
         "files         {files} ok, {} with errors",
         counts.errors
     )?;
-    let store = Store::open(&config.index_dir()).await?;
-    writeln!(
-        out,
-        "rows          {} document chunks, {} images",
-        store.count(Kind::Doc).await?,
-        store.count(Kind::Image).await?
-    )?;
+    if let Some(store) = Store::open_existing(&config.index_dir(), true).await? {
+        writeln!(
+            out,
+            "rows          {} document chunks, {} images",
+            store.count(Kind::Doc).await?,
+            store.count(Kind::Image).await?
+        )?;
+    }
     Ok(out)
 }
 
@@ -487,15 +576,19 @@ fn cmd_config(config: &Config, key: Option<&str>) -> Result<String> {
     Ok(out)
 }
 
-async fn cmd_toggle() -> Result<String> {
+/// A method of the popup's `org.endex.Ui1`; D-Bus starts endex-ui if it is not running.
+async fn call_ui<B>(method: &str, body: &B) -> Result<String>
+where
+    B: serde::Serialize + zbus::zvariant::DynamicType,
+{
     zbus::Connection::session()
         .await?
         .call_method(
             Some("org.endex.Ui1"),
             "/org/endex/Ui",
             Some("org.endex.Ui1"),
-            "Toggle",
-            &(),
+            method,
+            body,
         )
         .await?;
     Ok(String::new())

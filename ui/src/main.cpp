@@ -1,4 +1,5 @@
-// endex-ui: the search popup. One instance per session; org.endex.Ui1.Toggle shows or hides it.
+// endex-ui: the search popup and the settings window. One instance per session;
+// org.endex.Ui1.Toggle shows or hides the popup, ShowSettings opens the settings.
 
 #include <QApplication>
 #include <QCommandLineParser>
@@ -13,8 +14,12 @@
 #include <QQuickWindow>
 
 #include "daemon.h"
+#include "evalrun.h"
 #include "popup.h"
 #include "results.h"
+#include "settings.h"
+#include "settingswindow.h"
+#include "uidebug.h"
 
 using namespace Qt::StringLiterals;
 
@@ -49,30 +54,6 @@ public:
     }
 };
 
-// Test hook for the nested-KWin checks (ENDEX_UI_DEBUG=1): reports focus and result state.
-class DebugState : public QObject
-{
-    Q_OBJECT
-    Q_CLASSINFO("D-Bus Interface", "org.endex.UiDebug")
-
-public:
-    explicit DebugState(QObject *root)
-        : m_root(root)
-    {
-    }
-
-public Q_SLOTS:
-    Q_SCRIPTABLE QString State()
-    {
-        QVariant state;
-        QMetaObject::invokeMethod(m_root, "debugState", Q_RETURN_ARG(QVariant, state));
-        return state.toString();
-    }
-
-private:
-    QObject *m_root;
-};
-
 int main(int argc, char *argv[])
 {
     // QApplication, not QGuiApplication: the desktop Qt Quick Controls style draws with QStyle.
@@ -104,6 +85,8 @@ int main(int argc, char *argv[])
 
     Results results;
     Daemon daemon(&results);
+    Settings settings;
+    EvalRun evalRun;
     Popup popup;
     QQmlApplicationEngine engine;
     LocalOnlyNetworkFactory network;
@@ -112,18 +95,26 @@ int main(int argc, char *argv[])
         {u"popup"_s, QVariant::fromValue(&popup)},
         {u"daemon"_s, QVariant::fromValue(&daemon)},
         {u"results"_s, QVariant::fromValue(&results)},
+        {u"settings"_s, QVariant::fromValue(&settings)},
     });
     engine.loadFromModule("Endex", "Main");
     if (engine.rootObjects().isEmpty())
         return 1;
     QObject *root = engine.rootObjects().constFirst();
-    popup.attach(qobject_cast<QQuickWindow *>(root));
+    SettingsWindow settingsWindow(&engine,
+                                  {
+                                      {u"popup"_s, QVariant::fromValue(&popup)},
+                                      {u"daemon"_s, QVariant::fromValue(&daemon)},
+                                      {u"settings"_s, QVariant::fromValue(&settings)},
+                                      {u"evalRun"_s, QVariant::fromValue(&evalRun)},
+                                  });
+    popup.attach(qobject_cast<QQuickWindow *>(root), &settingsWindow);
 
     // The object goes first: D-Bus activation delivers the waiting Toggle as soon as the name
     // is ours.
     bus.registerObject(Path, &popup, QDBusConnection::ExportScriptableSlots);
-    DebugState debug(root);
-    if (qEnvironmentVariableIsSet("ENDEX_UI_DEBUG"))
+    UiDebug debug(root, &settingsWindow);
+    if (qgetenv("ENDEX_UI_DEBUG") == "1")
         bus.registerObject(u"/org/endex/UiDebug"_s, &debug, QDBusConnection::ExportScriptableSlots);
     if (!bus.registerService(Service)) {
         toggleRunning();
@@ -134,5 +125,3 @@ int main(int argc, char *argv[])
         popup.Show({});
     return app.exec();
 }
-
-#include "main.moc"

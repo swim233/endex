@@ -38,6 +38,7 @@ enum Job {
     Status {
         reply: oneshot::Sender<Status>,
     },
+    Configure(Box<Config>),
 }
 
 /// A chunk and the analyzed query, for highlighting.
@@ -85,7 +86,7 @@ impl Worker {
                 let _ = ready.send(warm);
                 if ok {
                     let served = panic::catch_unwind(AssertUnwindSafe(|| {
-                        run(&config, &mut searcher, &runtime, inbox)
+                        run(config, &mut searcher, &runtime, inbox)
                     }));
                     if served.is_err() {
                         // Nothing can be answered without this thread: exit, so that systemd
@@ -130,12 +131,16 @@ impl Worker {
         answer.await.context("search thread exited")
     }
 
+    pub fn configure(&self, config: Config) {
+        let _ = self.send(Job::Configure(Box::new(config)));
+    }
+
     fn send(&self, job: Job) -> Result<()> {
         self.jobs.send(job).ok().context("search thread exited")
     }
 }
 
-fn run(config: &Config, searcher: &mut Searcher, runtime: &Handle, inbox: mpsc::Receiver<Job>) {
+fn run(mut config: Config, searcher: &mut Searcher, runtime: &Handle, inbox: mpsc::Receiver<Job>) {
     let mut unavailable_since: Option<Instant> = None;
     for job in inbox {
         match job {
@@ -159,8 +164,12 @@ fn run(config: &Config, searcher: &mut Searcher, runtime: &Handle, inbox: mpsc::
                 });
                 let _ = reply.send(preview);
             }
+            Job::Configure(new) => {
+                searcher.set_config(&new);
+                config = *new;
+            }
             Job::Status { reply } => {
-                let index = runtime.block_on(counts(config, searcher)).transpose();
+                let index = runtime.block_on(counts(&config, searcher)).transpose();
                 let unavailable = matches!(&index, Some(Err(e)) if e.is::<TableUnavailable>());
                 if !unavailable {
                     unavailable_since = None;
@@ -170,7 +179,7 @@ fn run(config: &Config, searcher: &mut Searcher, runtime: &Handle, inbox: mpsc::
                 let _ = reply.send(Status {
                     index,
                     rebuilding,
-                    model: embed::model_identity(config).unwrap_or_default(),
+                    model: embed::model_identity(&config).unwrap_or_default(),
                 });
             }
         }

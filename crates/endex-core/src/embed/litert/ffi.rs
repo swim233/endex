@@ -65,6 +65,7 @@ api! {
         fn(*const c_char, *const c_char, *const c_char, *const c_char) -> *mut Settings;
     embedding_engine_settings_delete: fn(*mut Settings);
     embedding_engine_settings_set_cache_dir: fn(*mut Settings, *const c_char);
+    embedding_engine_settings_set_num_threads: fn(*mut Settings, c_int);
     embedding_options_create: fn() -> *mut Options;
     embedding_options_delete: fn(*mut Options);
     embedding_options_set_normalize: fn(*mut Options, bool);

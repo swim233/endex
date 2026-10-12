@@ -12,6 +12,7 @@ Window {
     required property Popup popup
     required property Daemon daemon
     required property Results results
+    required property Settings settings
 
     property string mode: "hybrid"
     readonly property var modes: [
@@ -19,15 +20,13 @@ Window {
         { id: "vector", label: qsTr("向量"), tip: qsTr("按语义找，一句话也能找到图片") },
         { id: "keyword", label: qsTr("关键词"), tip: qsTr("BM25 + jieba 分词，只匹配文字") },
     ]
-    // What the body shows: "results", "tips", "none", "failed", "first", "down", "broken",
-    // "rebuilding" or "connecting".
+    // What the body shows: "results", "tips", "none", "failed", "first" (no folders yet),
+    // "empty" (read-only, nothing indexed), "down", "broken", "rebuilding" or "connecting".
     readonly property string view: {
         switch (daemon.state) {
         case Daemon.Down:
         case Daemon.Starting:
             return "down"
-        case Daemon.Empty:
-            return "first"
         case Daemon.Broken:
             return "broken"
         case Daemon.Rebuilding:
@@ -36,6 +35,10 @@ Window {
             if (results.docCount + results.imageCount === 0)
                 return "connecting"
         }
+        if (daemon.status.mode === "writer" && (daemon.status.sources ?? []).length === 0)
+            return "first"
+        if (daemon.state === Daemon.Empty && daemon.status.mode !== "writer")
+            return "empty"
         if (field.text.trim() === "")
             return "tips"
         if (daemon.searchError !== "")
@@ -49,6 +52,7 @@ Window {
         if (mode === id)
             return
         mode = id
+        searched = true
         debounce.stop()
         daemon.search(field.text, mode)
     }
@@ -65,15 +69,53 @@ Window {
         status.toast(message)
     }
 
+    // The usage log gets at most one entry per summon, and only when the user did something:
+    // a result opened, or the popup hidden after a query the user searched (typed, a recent
+    // search, another mode). Not for the automatic re-run of the previous query, not for a
+    // cleared field, never per keystroke.
+    property var session: ({})
+    property bool sessionReported
+    property bool searched
+
+    function answered() {
+        return {
+            query: results.query,
+            mode: results.mode,
+            results: results.docCount + results.imageCount,
+            latency: daemon.latency,
+        }
+    }
+
+    function report(picked) {
+        const entry = picked ? answered() : session
+        if (sessionReported || !entry.query || daemon.status.usage_log !== true)
+            return
+        daemon.reportUsage({
+            query: entry.query,
+            mode: entry.mode,
+            results: entry.results,
+            latency_ms: entry.latency,
+            picked: picked,
+        })
+        sessionReported = true
+    }
+
+    function openSettings(page, welcome) {
+        menu.close()
+        popup.openSettings(page, welcome)
+    }
+
     function act(action) {
         const hit = results.current
         if (!hit.path)
             return
         switch (action) {
         case "open":
+            report(hit.path)
             popup.open(hit.path)
             break
         case "reveal":
+            report(hit.path)
             popup.reveal(hit.path)
             break
         case "path":
@@ -107,6 +149,9 @@ Window {
             + ` current=${c.name ?? "-"} chunk=${p.index ?? "-"}/${p.count ?? "-"} menu=${menu.visible}`
             + ` arrows=${results.arrowsInGrid ? "grid" : "field"} autosel=${field.autoSelection}`
             + ` error=${daemon.error} searchError=${daemon.searchError}`
+            + ` banner=${banner.kind} index=${daemon.indexState.state ?? "-"} recent=${daemon.recent.length}`
+            + ` recentIndex=${stateView.recentIndex} status=${status.stateText}`
+            + ` session=${session.query ?? "-"} searched=${searched} reported=${sessionReported} usageLog=${daemon.status.usage_log}`
     }
 
     width: 1100
@@ -115,20 +160,29 @@ Window {
     title: qsTr("Endex 搜索")
     // A menu left open must not come back with the next summon.
     onVisibleChanged: {
-        if (!visible)
+        if (!visible) {
             menu.close()
+            report("")
+        }
     }
 
     Connections {
         target: root.popup
 
         function onShown(query) {
+            root.session = {}
+            root.sessionReported = false
+            root.searched = false
+            stateView.recentIndex = -1
             if (query)
                 field.text = query
             field.forceActiveFocus()
             field.selectAll()
             field.autoSelection = true
             root.daemon.refresh()
+            root.daemon.fetchRecent()
+            if (!root.settings.loaded)
+                root.settings.load()
             // One search, not one more from the debounce: the index may have changed since.
             debounce.stop()
             if (field.text.trim() !== "")
@@ -163,6 +217,13 @@ Window {
         function onSelectionChanged() {
             root.daemon.fetchPreview(root.results.current.id ?? "", root.results.query)
             list.ensureCurrentVisible()
+        }
+
+        function onResultsChanged() {
+            if (root.results.query.trim() === "")
+                root.session = {}
+            else if (root.searched)
+                root.session = root.answered()
         }
     }
 
@@ -243,7 +304,9 @@ Window {
                     onTextChanged: {
                         debounce.restart()
                         root.results.releaseArrows()
+                        stateView.recentIndex = -1
                     }
+                    onTextEdited: root.searched = true
                     onSelectedTextChanged: {
                         if (selectedText !== text)
                             autoSelection = false
@@ -256,8 +319,17 @@ Window {
                         const copy = ctrl && event.key === Qt.Key_C
                         if (!modifierOnly && !copy)
                             field.autoSelection = false
+                        const recent = root.view === "tips" ? root.daemon.recent : []
                         if (event.key === Qt.Key_Escape) {
                             root.stepBack()
+                        } else if (recent.length > 0 && (event.key === Qt.Key_Down || event.key === Qt.Key_Up)) {
+                            const step = event.key === Qt.Key_Down ? 1 : -1
+                            stateView.recentIndex = Math.max(-1, Math.min(recent.length - 1, stateView.recentIndex + step))
+                        } else if (recent.length > 0 && stateView.recentIndex >= 0 && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
+                            root.searched = true
+                            field.text = recent[stateView.recentIndex]
+                        } else if (ctrl && event.key === Qt.Key_Comma) {
+                            root.openSettings("", false)
                         } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
                             root.act(ctrl ? "reveal" : "open")
                         } else if (ctrl && event.key >= Qt.Key_1 && event.key <= Qt.Key_3) {
@@ -327,15 +399,28 @@ Window {
                 }
 
                 QQC2.ToolButton {
+                    objectName: "gear"
                     icon.name: "configure"
                     display: QQC2.AbstractButton.IconOnly
-                    text: qsTr("设置：用默认编辑器打开 config.toml（设置窗口在 M3）")
+                    text: qsTr("设置（Ctrl+,）")
                     focusPolicy: Qt.NoFocus
-                    onClicked: root.popup.openConfig(root.daemon.status.config_path ?? "")
+                    onClicked: root.openSettings("", false)
                     QQC2.ToolTip.text: text
                     QQC2.ToolTip.visible: hovered
                     QQC2.ToolTip.delay: Kirigami.Units.toolTipDelay
                 }
+            }
+
+            Banner {
+                id: banner
+
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.largeSpacing * 1.5
+                Layout.rightMargin: Kirigami.Units.largeSpacing * 1.5
+                Layout.bottomMargin: Kirigami.Units.largeSpacing
+                daemon: root.daemon
+                profile: root.settings.saved["resources.profile"] ?? ""
+                onSettingsRequested: page => root.openSettings(page, false)
             }
 
             Kirigami.Separator {
@@ -381,6 +466,8 @@ Window {
                 }
 
                 StateView {
+                    id: stateView
+
                     anchors.fill: parent
                     visible: root.view !== "results"
                     view: root.view
@@ -392,6 +479,12 @@ Window {
                         root.popup.copy(text)
                         root.toast(qsTr("已复制命令"))
                     }
+                    onRerun: query => {
+                        root.searched = true
+                        field.text = query
+                        field.forceActiveFocus()
+                    }
+                    onSettingsRequested: (page, welcome) => root.openSettings(page, welcome)
                 }
             }
 

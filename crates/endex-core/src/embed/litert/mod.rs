@@ -47,6 +47,8 @@ pub struct EngineConfig<'a> {
     pub model: &'a Path,
     pub cache_dir: &'a Path,
     pub device: Device,
+    /// CPU threads; the runtime's default if `None`.
+    pub threads: Option<usize>,
 }
 
 /// One loaded embedding model on one backend; `&mut self` serializes calls into it.
@@ -73,6 +75,12 @@ impl Engine {
             );
             let settings = NonNull::new(settings).context("creating LiteRT-LM settings")?;
             (api.embedding_engine_settings_set_cache_dir)(settings.as_ptr(), cache_dir.as_ptr());
+            if let Some(threads) = config.threads {
+                (api.embedding_engine_settings_set_num_threads)(
+                    settings.as_ptr(),
+                    threads.min(c_int::MAX as usize) as c_int,
+                );
+            }
             let raw = (api.embedding_engine_create)(settings.as_ptr());
             (api.embedding_engine_settings_delete)(settings.as_ptr());
             let Some(raw) = NonNull::new(raw) else {

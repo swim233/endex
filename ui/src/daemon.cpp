@@ -1,10 +1,13 @@
 #include "daemon.h"
 
+#include <QDBusArgument>
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#include <QGuiApplication>
 #include <QPoint>
+#include <QWindow>
 #include <QProcess>
 
 #include "results.h"
@@ -34,9 +37,56 @@ Daemon::Daemon(Results *results, QObject *parent)
         if (m_state == Starting)
             setState(Down, tr("启动超时。用 journalctl --user -u endexd 查看日志。"));
     });
+    m_restartTimeout.setSingleShot(true);
+    m_restartTimeout.setInterval(60000);
+    connect(&m_restartTimeout, &QTimer::timeout, this, [this] {
+        if (m_restarting)
+            setRestart(false, tr("重启后一分钟内守护进程没有回应。用 journalctl --user -u endexd 查看日志。"));
+    });
+    QDBusConnection::sessionBus().connect(Service, Path, u"org.freedesktop.DBus.Properties"_s, u"PropertiesChanged"_s, this,
+                                          SLOT(propertiesChanged(QString, QVariantMap, QStringList)));
 }
 
-static QDBusPendingCallWatcher *call(QObject *owner, const QString &method, const QVariantList &args)
+QVariant fromDBus(const QVariant &value)
+{
+    if (value.metaType() == QMetaType::fromType<QDBusVariant>())
+        return fromDBus(value.value<QDBusVariant>().variant());
+    if (value.metaType() == QMetaType::fromType<QVariantMap>()) {
+        QVariantMap map = value.toMap();
+        for (auto it = map.begin(); it != map.end(); ++it)
+            *it = fromDBus(*it);
+        return map;
+    }
+    if (value.metaType() != QMetaType::fromType<QDBusArgument>())
+        return value;
+    const auto arg = value.value<QDBusArgument>();
+    switch (arg.currentType()) {
+    case QDBusArgument::MapType: {
+        QVariantMap map;
+        arg.beginMap();
+        while (!arg.atEnd()) {
+            arg.beginMapEntry();
+            const QString key = arg.asVariant().toString();
+            map.insert(key, fromDBus(arg.asVariant()));
+            arg.endMapEntry();
+        }
+        arg.endMap();
+        return map;
+    }
+    case QDBusArgument::ArrayType: {
+        QVariantList list;
+        arg.beginArray();
+        while (!arg.atEnd())
+            list.append(fromDBus(arg.asVariant()));
+        arg.endArray();
+        return list;
+    }
+    default:
+        return fromDBus(arg.asVariant());
+    }
+}
+
+QDBusPendingCallWatcher *callDaemon(QObject *owner, const QString &method, const QVariantList &args)
 {
     auto message = QDBusMessage::createMethodCall(Service, Path, Interface, method);
     message.setArguments(args);
@@ -46,7 +96,7 @@ static QDBusPendingCallWatcher *call(QObject *owner, const QString &method, cons
 
 void Daemon::refresh()
 {
-    connect(call(this, u"Status"_s, {}), &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
+    connect(callDaemon(this, u"Status"_s, {}), &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
         w->deleteLater();
         const QDBusPendingReply<QVariantMap> reply = *w;
         if (reply.isError()) {
@@ -54,8 +104,12 @@ void Daemon::refresh()
                 setState(Broken, reply.error().message());
             return;
         }
-        m_status = reply.value();
+        m_status = fromDBus(reply.value()).toMap();
         Q_EMIT statusChanged();
+        // The first answer after systemctl returned comes from the new daemon (Type=dbus).
+        if (m_restarted)
+            setRestart(false);
+        setIndexState(m_status.value(u"index_state"_s).toMap(), false);
         const QString state = m_status.value(u"state"_s).toString();
         if (state == u"ready"_s)
             setState(Ready);
@@ -85,7 +139,7 @@ void Daemon::search(const QString &query, const QString &mode)
     };
     QElapsedTimer timer;
     timer.start();
-    auto watcher = call(this, u"Search"_s, {query, mode, opts});
+    auto watcher = callDaemon(this, u"Search"_s, {query, mode, opts});
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [=, this](QDBusPendingCallWatcher *w) {
         w->deleteLater();
         if (id != m_queryId)
@@ -124,7 +178,7 @@ void Daemon::fetchPreview(const QString &id, const QString &query)
     Q_EMIT previewChanged();
     if (id.isEmpty())
         return;
-    connect(call(this, u"Preview"_s, {id, query}), &QDBusPendingCallWatcher::finished, this, [=, this](QDBusPendingCallWatcher *w) {
+    connect(callDaemon(this, u"Preview"_s, {id, query}), &QDBusPendingCallWatcher::finished, this, [=, this](QDBusPendingCallWatcher *w) {
         w->deleteLater();
         if (id != m_previewId)
             return;
@@ -144,30 +198,141 @@ void Daemon::fetchPreview(const QString &id, const QString &query)
     });
 }
 
+void Daemon::fetchRecent()
+{
+    connect(callDaemon(this, u"RecentQueries"_s, {8u}), &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
+        w->deleteLater();
+        const QDBusPendingReply<QStringList> reply = *w;
+        const QStringList recent = reply.isError() ? QStringList() : reply.value();
+        if (recent != m_recent) {
+            m_recent = recent;
+            Q_EMIT recentChanged();
+        }
+    });
+}
+
+void Daemon::control(const QString &method)
+{
+    static const QStringList methods = {u"Pause"_s, u"Resume"_s, u"ContinueOnBattery"_s, u"Rescan"_s, u"Rebuild"_s};
+    Q_ASSERT(methods.contains(method));
+    if (!methods.contains(method))
+        return;
+    connect(callDaemon(this, method, {}), &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
+        w->deleteLater();
+        const QDBusPendingReply<> reply = *w;
+        if (reply.isError() && !handleUnreachable(reply.error()))
+            Q_EMIT actionFailed(reply.error().message());
+        refresh();
+    });
+}
+
+void Daemon::retry(const QStringList &paths)
+{
+    connect(callDaemon(this, u"Retry"_s, {paths}), &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
+        w->deleteLater();
+        const QDBusPendingReply<> reply = *w;
+        if (reply.isError() && !handleUnreachable(reply.error()))
+            Q_EMIT actionFailed(reply.error().message());
+    });
+}
+
+void Daemon::reportUsage(const QVariantMap &entry)
+{
+    const QVariantMap typed = {
+        {u"query"_s, entry.value(u"query"_s).toString()},
+        {u"mode"_s, entry.value(u"mode"_s).toString()},
+        {u"results"_s, entry.value(u"results"_s).toUInt()},
+        {u"latency_ms"_s, entry.value(u"latency_ms"_s).toUInt()},
+        {u"picked"_s, entry.value(u"picked"_s).toString()},
+    };
+    // Fire and forget: a lost entry only shortens the recent searches.
+    auto message = QDBusMessage::createMethodCall(Service, Path, Interface, u"ReportUsage"_s);
+    message.setArguments({typed});
+    QDBusConnection::sessionBus().asyncCall(message, CallTimeoutMs);
+}
+
+void Daemon::propertiesChanged(const QString &interface, const QVariantMap &changed, const QStringList &)
+{
+    if (interface == Interface && changed.contains(u"IndexState"_s))
+        setIndexState(fromDBus(changed.value(u"IndexState"_s)).toMap(), true);
+}
+
+void Daemon::setIndexState(const QVariantMap &state, bool live)
+{
+    if (state == m_indexState)
+        return;
+    const bool phase = state.value(u"state"_s) != m_indexState.value(u"state"_s);
+    m_indexState = state;
+    Q_EMIT indexStateChanged();
+    // Counts and per-folder numbers change with the phase (e.g. at the end of a run); only
+    // worth asking for while a window shows them (a summon refreshes anyway).
+    const auto windows = QGuiApplication::topLevelWindows();
+    const bool shown = std::any_of(windows.cbegin(), windows.cend(), [](QWindow *w) {
+        return w->isVisible();
+    });
+    if (live && phase && shown)
+        refresh();
+}
+
 void Daemon::start()
 {
     setState(Starting);
     m_startTimeout.start();
-    auto systemctl = new QProcess(this);
-    systemctl->setProgram(qEnvironmentVariable("ENDEX_SYSTEMCTL", u"systemctl"_s));
-    systemctl->setArguments({u"--user"_s, u"start"_s, u"endexd"_s});
-    connect(systemctl, &QProcess::finished, this, [this, systemctl](int code, QProcess::ExitStatus status) {
-        systemctl->deleteLater();
-        if (status == QProcess::NormalExit && code == 0) {
-            // Type=dbus: the name is already on the bus.
-            refresh();
+    systemctl(u"start"_s, [this](const QString &error) {
+        if (error.isEmpty())
+            refresh(); // Type=dbus: the name is already on the bus.
+        else
+            setState(Down, error);
+    });
+}
+
+void Daemon::restart()
+{
+    if (m_restarting)
+        return;
+    setRestart(true);
+    m_restartTimeout.start();
+    systemctl(u"restart"_s, [this](const QString &error) {
+        if (!error.isEmpty()) {
+            setRestart(false, error);
             return;
         }
-        const QString output = QString::fromLocal8Bit(systemctl->readAllStandardError()).trimmed();
-        setState(Down, tr("systemctl --user start endexd 失败（退出码 %1）：%2").arg(code).arg(output));
+        m_restarted = true;
+        refresh();
     });
-    connect(systemctl, &QProcess::errorOccurred, this, [this, systemctl](QProcess::ProcessError error) {
+}
+
+void Daemon::systemctl(const QString &action, std::function<void(const QString &)> done)
+{
+    auto process = new QProcess(this);
+    process->setProgram(qEnvironmentVariable("ENDEX_SYSTEMCTL", u"systemctl"_s));
+    process->setArguments({u"--user"_s, action, u"endexd"_s});
+    connect(process, &QProcess::finished, this, [process, action, done](int code, QProcess::ExitStatus status) {
+        process->deleteLater();
+        if (status == QProcess::NormalExit && code == 0) {
+            done({});
+            return;
+        }
+        const QString output = QString::fromLocal8Bit(process->readAllStandardError()).trimmed();
+        done(tr("systemctl --user %1 endexd 失败（退出码 %2）：%3").arg(action).arg(code).arg(output));
+    });
+    connect(process, &QProcess::errorOccurred, this, [process, done](QProcess::ProcessError error) {
         if (error != QProcess::FailedToStart)
             return;
-        systemctl->deleteLater();
-        setState(Down, tr("无法运行 systemctl：%1").arg(systemctl->errorString()));
+        process->deleteLater();
+        done(tr("无法运行 systemctl：%1").arg(process->errorString()));
     });
-    systemctl->start();
+    process->start();
+}
+
+void Daemon::setRestart(bool restarting, const QString &error)
+{
+    if (!restarting)
+        m_restartTimeout.stop();
+    m_restarted = false;
+    m_restarting = restarting;
+    m_restartError = error;
+    Q_EMIT restartChanged();
 }
 
 void Daemon::setState(State state, const QString &error)

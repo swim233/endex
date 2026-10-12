@@ -1,13 +1,10 @@
 #include "popup.h"
 
 #include <QClipboard>
-#include <QCoreApplication>
 #include <QFileInfo>
 #include <QGuiApplication>
-#include <QProcess>
 #include <QQuickWindow>
 #include <QScreen>
-#include <QStandardPaths>
 #include <QUrl>
 
 #include <KIO/OpenFileManagerWindowJob>
@@ -15,13 +12,17 @@
 #include <KWaylandExtras>
 #include <LayerShellQt/Window>
 
+#include "evalrun.h"
+#include "settingswindow.h"
+
 using namespace Qt::StringLiterals;
 
 static constexpr int TopMargin = 120;
 
-void Popup::attach(QQuickWindow *window)
+void Popup::attach(QQuickWindow *window, SettingsWindow *settings)
 {
     m_window = window;
+    m_settings = settings;
     m_layer = LayerShellQt::Window::get(window);
     m_layer->setScope(u"endex"_s);
     // Top, not overlay: KWin stacks the input method's candidate window below overlay surfaces.
@@ -84,37 +85,28 @@ void Popup::copy(const QString &text)
     QGuiApplication::clipboard()->setText(text);
 }
 
-void Popup::openConfig(const QString &path)
+QString Popup::toggleCommand() const
 {
-    const QString file = path.isEmpty()
-        ? QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation) + u"/endex/config.toml"_s
-        : path;
-    const auto open = [this, file] {
-        if (QFileInfo::exists(file))
-            launch(file, false);
-        else
-            Q_EMIT failed(tr("还没有配置文件 %1：运行一次 endex 或启动守护进程就会创建").arg(file));
-    };
-    const QString sibling = QCoreApplication::applicationDirPath() + u"/endex"_s;
-    const QString endex = QFileInfo(sibling).isExecutable() ? sibling : QStandardPaths::findExecutable(u"endex"_s);
-    if (QFileInfo::exists(file) || endex.isEmpty()) {
-        open();
-        return;
-    }
-    // Any `endex` command writes the commented default config on first use.
-    auto config = new QProcess(this);
-    config->setStandardOutputFile(QProcess::nullDevice());
-    connect(config, &QProcess::finished, this, [config, open] {
-        config->deleteLater();
-        open();
+    const QString endex = endexProgram();
+    return (endex.isEmpty() ? u"endex"_s : endex) + u" toggle"_s;
+}
+
+void Popup::openSettings(const QString &page, bool welcome)
+{
+    KWaylandExtras::xdgActivationToken(m_window, u"endex-ui"_s).then(this, [this, page, welcome](const QString &token) {
+        hide();
+        m_settings->show(page, welcome, token);
     });
-    connect(config, &QProcess::errorOccurred, this, [config, open](QProcess::ProcessError error) {
-        if (error != QProcess::FailedToStart)
-            return;
-        config->deleteLater();
-        open();
-    });
-    config->start(endex, {u"config"_s, u"data_dir"_s});
+}
+
+void Popup::ShowSettings(const QString &page)
+{
+    m_settings->show(page, false);
+}
+
+void Popup::ActivateSettings(const QString &page, const QString &activationToken)
+{
+    m_settings->show(page, false, activationToken);
 }
 
 void Popup::launch(const QString &path, bool reveal)
@@ -124,7 +116,9 @@ void Popup::launch(const QString &path, bool reveal)
         return;
     }
     const QUrl url = QUrl::fromLocalFile(path);
-    KWaylandExtras::xdgActivationToken(m_window, u"endex-ui"_s).then(this, [this, url, reveal](const QString &token) {
+    // The popup, or the settings window (a config file with errors).
+    QWindow *from = QGuiApplication::focusWindow() ? QGuiApplication::focusWindow() : m_window.data();
+    KWaylandExtras::xdgActivationToken(from, u"endex-ui"_s).then(this, [this, url, reveal, from](const QString &token) {
         if (reveal) {
             KIO::highlightInFileManager({url}, token.toUtf8());
         } else {
@@ -132,6 +126,7 @@ void Popup::launch(const QString &path, bool reveal)
             job->setStartupId(token.toUtf8());
             job->start();
         }
-        hide();
+        if (from == m_window)
+            hide();
     });
 }

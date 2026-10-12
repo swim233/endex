@@ -1,11 +1,15 @@
-//! SQLite catalog: what was indexed, from which manifest, and with which model.
+//! SQLite catalog: what was indexed, who listed it (a manifest or a source folder), and with
+//! which model.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 
 use crate::Kind;
+use crate::config::Config;
+use crate::embed;
 
 pub const STATUS_OK: &str = "ok";
 pub const STATUS_ERROR: &str = "error";
@@ -21,7 +25,9 @@ pub struct FileRecord {
     pub status: String,
     pub error: Option<String>,
     pub indexed_at: i64,
-    pub manifest: String,
+    /// The canonical path of the manifest (`endex index`) or the source folder (endexd) that
+    /// lists the file.
+    pub owner: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,8 +68,52 @@ pub fn detect_change(
     })
 }
 
-pub struct Catalog {
-    conn: Connection,
+/// What a scan compares a file on disk with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Known {
+    pub size: u64,
+    pub mtime: i64,
+    pub ok: bool,
+}
+
+/// The vector space and text extraction an index was built with; rows of different
+/// identities must not be mixed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Identity {
+    pub model: String,
+    pub prefix_style: String,
+    pub ocr: String,
+}
+
+impl Identity {
+    pub fn of(config: &Config) -> Result<Self> {
+        Ok(Self {
+            model: embed::model_identity(config)?,
+            prefix_style: config.embedding.prefix_style.as_str().to_owned(),
+            ocr: if config.ocr.enabled {
+                "pp-ocrv6_small"
+            } else {
+                "off"
+            }
+            .to_owned(),
+        })
+    }
+
+    fn entries(&self) -> [(&'static str, &str); 3] {
+        [
+            ("model", &self.model),
+            ("prefix_style", &self.prefix_style),
+            ("ocr", &self.ocr),
+        ]
+    }
+}
+
+/// One differing part of an [`Identity`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mismatch {
+    pub key: &'static str,
+    pub stored: String,
+    pub wanted: String,
 }
 
 #[derive(Debug, Default)]
@@ -72,9 +122,22 @@ pub struct Counts {
     pub errors: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnerCounts {
+    pub owner: String,
+    pub files: usize,
+    pub errors: usize,
+}
+
+pub struct Catalog {
+    conn: Connection,
+}
+
 impl Catalog {
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        let mut conn = Connection::open(path)
+            .map_err(|e| anyhow::anyhow!("opening {}: {e}", path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch(
             "PRAGMA journal_mode = WAL;
              CREATE TABLE IF NOT EXISTS files (
@@ -86,17 +149,46 @@ impl Catalog {
                  status TEXT NOT NULL,
                  error TEXT,
                  indexed_at INTEGER NOT NULL,
-                 manifest TEXT NOT NULL
+                 owner TEXT NOT NULL,
+                 ext TEXT NOT NULL DEFAULT ''
              );
              CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);",
         )?;
+        migrate(&mut conn)?;
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS files_owner ON files (owner);")?;
         Ok(Self { conn })
     }
 
     /// For readers next to a running indexer: no schema changes, never creates the file.
     pub fn open_read_only(path: &Path) -> Result<Self> {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-            .with_context(|| format!("opening {}", path.display()))?;
+            .map_err(|e| anyhow::anyhow!("opening {}: {e}", path.display()))?;
+        conn.busy_timeout(std::time::Duration::from_secs(2))?;
+        Ok(Self { conn })
+    }
+
+    /// Reads without writing anything, not even SQLite's shared memory next to the file: for
+    /// catalogs that must stay as they are, such as the public eval sets.
+    pub fn open_untouched(path: &Path) -> Result<Self> {
+        let text = path.to_str().context("catalog path is not UTF-8")?;
+        let mut uri = String::from("file:");
+        for c in text.chars() {
+            match c {
+                '%' | '?' | '#' => uri.push_str(&format!("%{:02X}", c as u32)),
+                c => uri.push(c),
+            }
+        }
+        // Without pending WAL frames the file is all there is: `immutable` opens nothing else
+        // (SQLite would open, and maybe create, the -wal file read-write otherwise).
+        let wal = path.with_extension("sqlite-wal");
+        let pending = std::fs::metadata(&wal).is_ok_and(|m| m.len() > 0);
+        uri.push_str(match pending {
+            true => "?mode=ro&readonly_shm=1",
+            false => "?mode=ro&immutable=1",
+        });
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI;
+        let conn = Connection::open_with_flags(&uri, flags)
+            .map_err(|e| anyhow::anyhow!("opening {}: {e}", path.display()))?;
         conn.busy_timeout(std::time::Duration::from_secs(2))?;
         Ok(Self { conn })
     }
@@ -104,22 +196,10 @@ impl Catalog {
     pub fn get(&self, path: &str) -> Result<Option<FileRecord>> {
         self.conn
             .query_row(
-                "SELECT path, kind, size, mtime, hash, status, error, indexed_at, manifest
+                "SELECT path, kind, size, mtime, hash, status, error, indexed_at, owner
                  FROM files WHERE path = ?1",
                 [path],
-                |r| {
-                    Ok(FileRecord {
-                        path: r.get(0)?,
-                        kind: r.get::<_, String>(1)?.parse().unwrap_or(Kind::Doc),
-                        size: r.get::<_, i64>(2)? as u64,
-                        mtime: r.get(3)?,
-                        hash: r.get(4)?,
-                        status: r.get(5)?,
-                        error: r.get(6)?,
-                        indexed_at: r.get(7)?,
-                        manifest: r.get(8)?,
-                    })
-                },
+                record,
             )
             .optional()
             .map_err(Into::into)
@@ -130,8 +210,8 @@ impl Catalog {
         {
             let mut stmt = tx.prepare(
                 "INSERT OR REPLACE INTO files
-                 (path, kind, size, mtime, hash, status, error, indexed_at, manifest)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 (path, kind, size, mtime, hash, status, error, indexed_at, owner, ext)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             )?;
             for r in records {
                 stmt.execute(params![
@@ -143,7 +223,8 @@ impl Catalog {
                     r.status,
                     r.error,
                     r.indexed_at,
-                    r.manifest
+                    r.owner,
+                    extension(&r.path)
                 ])?;
             }
         }
@@ -151,11 +232,55 @@ impl Catalog {
         Ok(())
     }
 
-    pub fn paths_of_manifest(&self, manifest: &str) -> Result<Vec<String>> {
-        let mut stmt = self
+    pub fn paths_of_owner(&self, owner: &str) -> Result<Vec<String>> {
+        self.strings("SELECT path FROM files WHERE owner = ?1", [owner])
+    }
+
+    /// Files listed by none of `owners`.
+    pub fn paths_not_owned_by(&self, owners: &[String]) -> Result<Vec<String>> {
+        let marks = vec!["?"; owners.len()].join(", ");
+        self.strings(
+            &format!("SELECT path FROM files WHERE owner NOT IN ({marks})"),
+            rusqlite::params_from_iter(owners),
+        )
+    }
+
+    /// Whether the catalog has any file at or below `dir`.
+    pub fn has_files_under(&self, dir: &Path) -> Result<bool> {
+        let dir = dir.to_string_lossy();
+        let low = format!("{}/", dir.trim_end_matches('/'));
+        let high = format!("{}0", dir.trim_end_matches('/'));
+        let found: Option<i64> = self
             .conn
-            .prepare("SELECT path FROM files WHERE manifest = ?1")?;
-        let rows = stmt.query_map([manifest], |r| r.get(0))?;
+            .query_row(
+                "SELECT 1 FROM files WHERE (path >= ?1 AND path < ?2) OR path = ?3 LIMIT 1",
+                params![low, high, dir.as_ref()],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(found.is_some())
+    }
+
+    /// Catalog entries at or below `dir`, by path.
+    pub fn under(&self, dir: &Path) -> Result<BTreeMap<String, Known>> {
+        let dir = dir.to_string_lossy();
+        // Paths below `dir/` sort between `dir/` and `dir0` ('0' follows '/').
+        let low = format!("{}/", dir.trim_end_matches('/'));
+        let high = format!("{}0", dir.trim_end_matches('/'));
+        let mut stmt = self.conn.prepare(
+            "SELECT path, size, mtime, status FROM files
+             WHERE (path >= ?1 AND path < ?2) OR path = ?3",
+        )?;
+        let rows = stmt.query_map(params![low, high, dir.as_ref()], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                Known {
+                    size: r.get::<_, i64>(1)? as u64,
+                    mtime: r.get(2)?,
+                    ok: r.get::<_, String>(3)? == STATUS_OK,
+                },
+            ))
+        })?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
@@ -171,6 +296,12 @@ impl Catalog {
     pub fn clear(&mut self) -> Result<()> {
         self.conn
             .execute_batch("DELETE FROM files; DELETE FROM meta;")?;
+        Ok(())
+    }
+
+    /// Forgets every file but keeps the meta flags.
+    pub fn clear_files(&mut self) -> Result<()> {
+        self.conn.execute_batch("DELETE FROM files;")?;
         Ok(())
     }
 
@@ -194,27 +325,45 @@ impl Catalog {
         Ok(())
     }
 
-    /// Fails if the index was built with another model or prefix style: vectors must not mix.
-    pub fn check_embedding_identity(&self, model: &str, prefix_style: &str) -> Result<()> {
-        for (key, value) in [("model", model), ("prefix_style", prefix_style)] {
-            if let Some(stored) = self.meta(key)?.filter(|stored| stored != value) {
-                bail!(
-                    "the index was built with {key} `{stored}` but the config now says `{value}`; \
-                     run `endex index --rebuild ...` to re-index"
-                );
+    /// The first part of `identity` that differs from what the index was built with. Parts
+    /// not recorded yet (older indexes have no `ocr`) count as matching.
+    pub fn identity_mismatch(&self, identity: &Identity) -> Result<Option<Mismatch>> {
+        for (key, wanted) in identity.entries() {
+            if let Some(stored) = self.meta(key)?.filter(|stored| stored != wanted) {
+                return Ok(Some(Mismatch {
+                    key,
+                    stored,
+                    wanted: wanted.to_owned(),
+                }));
             }
         }
-        Ok(())
+        Ok(None)
     }
 
-    /// Checks the identity and records it for a new index.
-    pub fn ensure_embedding_identity(&self, model: &str, prefix_style: &str) -> Result<()> {
-        self.check_embedding_identity(model, prefix_style)?;
-        for (key, value) in [("model", model), ("prefix_style", prefix_style)] {
+    /// Fails if the index was built with another identity; records the missing parts.
+    pub fn ensure_identity(&self, identity: &Identity) -> Result<()> {
+        if let Some(m) = self.identity_mismatch(identity)? {
+            bail!(
+                "the index was built with {} `{}` but the config now says `{}`; \
+                 run `endex index --rebuild ...` to re-index",
+                m.key,
+                m.stored,
+                m.wanted
+            );
+        }
+        for (key, value) in identity.entries() {
             self.conn.execute(
                 "INSERT OR IGNORE INTO meta (key, value) VALUES (?1, ?2)",
                 [key, value],
             )?;
+        }
+        Ok(())
+    }
+
+    /// Records `identity` for an index that has no files yet.
+    pub fn set_identity(&self, identity: &Identity) -> Result<()> {
+        for (key, value) in identity.entries() {
+            self.set_meta(key, Some(value))?;
         }
         Ok(())
     }
@@ -224,6 +373,13 @@ impl Catalog {
         self.conn
             .query_row("SELECT MAX(indexed_at) FROM files", [], |r| r.get(0))
             .map_err(Into::into)
+    }
+
+    pub fn file_count(&self) -> Result<usize> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM files", [], |r| r.get(0))?;
+        Ok(n as usize)
     }
 
     pub fn counts(&self) -> Result<Counts> {
@@ -245,6 +401,94 @@ impl Catalog {
         let errors = errors as usize;
         Ok(Counts { ok, errors })
     }
+
+    /// Indexed files per extension (lowercase, without the dot).
+    pub fn formats(&self) -> Result<Vec<(String, usize)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT ext, COUNT(*) FROM files WHERE status = 'ok' GROUP BY ext ORDER BY ext",
+        )?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize)))?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    pub fn owner_counts(&self) -> Result<Vec<OwnerCounts>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT owner, SUM(status = 'ok'), SUM(status != 'ok') FROM files GROUP BY owner",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(OwnerCounts {
+                owner: r.get(0)?,
+                files: r.get::<_, i64>(1)? as usize,
+                errors: r.get::<_, i64>(2)? as usize,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    /// Files whose last attempt failed, the newest first.
+    pub fn failed(&self, limit: usize) -> Result<Vec<FileRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT path, kind, size, mtime, hash, status, error, indexed_at, owner
+             FROM files WHERE status != 'ok' ORDER BY indexed_at DESC, path LIMIT ?1",
+        )?;
+        let rows = stmt.query_map([limit as i64], record)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    fn strings(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(sql)?;
+        let rows = stmt.query_map(params, |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+}
+
+fn record(r: &rusqlite::Row) -> rusqlite::Result<FileRecord> {
+    Ok(FileRecord {
+        path: r.get(0)?,
+        kind: r.get::<_, String>(1)?.parse().unwrap_or(Kind::Doc),
+        size: r.get::<_, i64>(2)? as u64,
+        mtime: r.get(3)?,
+        hash: r.get(4)?,
+        status: r.get(5)?,
+        error: r.get(6)?,
+        indexed_at: r.get(7)?,
+        owner: r.get(8)?,
+    })
+}
+
+fn extension(path: &str) -> String {
+    Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+}
+
+/// Catalogs written before M3 call the owner `manifest` and have no `ext`.
+fn migrate(conn: &mut Connection) -> Result<()> {
+    let columns: Vec<String> = {
+        let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('files')")?;
+        let rows = stmt.query_map([], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    let has = |name: &str| columns.iter().any(|c| c == name);
+    let tx = conn.transaction()?;
+    if has("manifest") {
+        tx.execute_batch("ALTER TABLE files RENAME COLUMN manifest TO owner;")?;
+    }
+    if !has("ext") {
+        tx.execute_batch("ALTER TABLE files ADD COLUMN ext TEXT NOT NULL DEFAULT '';")?;
+        let paths: Vec<String> = {
+            let mut stmt = tx.prepare("SELECT path FROM files")?;
+            let rows = stmt.query_map([], |r| r.get(0))?;
+            rows.collect::<rusqlite::Result<_>>()?
+        };
+        let mut update = tx.prepare("UPDATE files SET ext = ?1 WHERE path = ?2")?;
+        for path in &paths {
+            update.execute([extension(path), path.clone()])?;
+        }
+    }
+    tx.commit()?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -261,8 +505,45 @@ mod tests {
             status: STATUS_OK.into(),
             error: None,
             indexed_at: 0,
-            manifest: "m".into(),
+            owner: "m".into(),
         }
+    }
+
+    #[test]
+    fn untouched_reads_pending_wal_frames_and_writes_nothing() {
+        let dir = std::env::temp_dir().join(format!("endex-catalog-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("catalog.sqlite");
+        let listing = || {
+            let mut names: Vec<_> = std::fs::read_dir(&dir)
+                .unwrap()
+                .map(|e| e.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let mut writer = Catalog::open(&path).unwrap();
+        writer.upsert(&[record(10, 100, "h1")]).unwrap();
+        let before = listing();
+        assert!(
+            Catalog::open_untouched(&path)
+                .unwrap()
+                .get("/a")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(listing(), before);
+        drop(writer);
+        let before = listing();
+        assert!(
+            Catalog::open_untouched(&path)
+                .unwrap()
+                .get("/a")
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(listing(), before);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

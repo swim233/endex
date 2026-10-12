@@ -147,25 +147,25 @@ impl Store {
     /// Compacts fragments, rebuilds the keyword indexes and drops old versions so that deleted
     /// content does not linger on disk.
     pub async fn finish(&self) -> Result<()> {
+        self.compact().await?;
+        if self.table.count_rows(None).await? > 0 {
+            self.build_keyword_index().await?;
+        }
+        self.prune().await
+    }
+
+    pub async fn compact(&self) -> Result<()> {
         self.table
             .optimize(OptimizeAction::Compact {
                 options: Default::default(),
                 remap_options: None,
             })
             .await?;
-        if self.table.count_rows(None).await? > 0 {
-            // Both columns hold pre-analyzed terms; Lance only lowercases and stems them and
-            // drops English stop words.
-            for column in ["terms", "name"] {
-                let params = FtsIndexBuilder::default().base_tokenizer("whitespace".into());
-                self.table
-                    .create_index(&[column], Index::FTS(params))
-                    .replace(true)
-                    .execute()
-                    .await
-                    .with_context(|| format!("building the {column} keyword index"))?;
-            }
-        }
+        Ok(())
+    }
+
+    /// Deletes all versions but the newest.
+    pub async fn prune(&self) -> Result<()> {
         self.table
             .optimize(OptimizeAction::Prune {
                 older_than: chrono::Duration::try_seconds(0),
@@ -174,6 +174,46 @@ impl Store {
             })
             .await?;
         Ok(())
+    }
+
+    /// Builds both keyword indexes from scratch.
+    pub async fn build_keyword_index(&self) -> Result<()> {
+        // Both columns hold pre-analyzed terms; Lance only lowercases and stems them and
+        // drops English stop words.
+        for column in ["terms", "name"] {
+            let params = FtsIndexBuilder::default().base_tokenizer("whitespace".into());
+            self.table
+                .create_index(&[column], Index::FTS(params))
+                .replace(true)
+                .execute()
+                .await
+                .with_context(|| format!("building the {column} keyword index"))?;
+        }
+        Ok(())
+    }
+
+    pub async fn has_keyword_index(&self) -> Result<bool> {
+        Ok(!self.table.list_indices().await?.is_empty())
+    }
+
+    /// Adds rows written since the keyword indexes were built to them. Until then keyword
+    /// search scans those rows (with the same analyzer and the indexed BM25 statistics).
+    pub async fn update_keyword_index(&self) -> Result<()> {
+        self.table
+            .optimize(OptimizeAction::Index(Default::default()))
+            .await?;
+        Ok(())
+    }
+
+    /// Rows not covered by the keyword indexes yet.
+    pub async fn unindexed_rows(&self) -> Result<usize> {
+        let mut most = 0;
+        for index in self.table.list_indices().await? {
+            if let Some(stats) = self.table.index_stats(&index.name).await? {
+                most = most.max(stats.num_unindexed_rows);
+            }
+        }
+        Ok(most)
     }
 
     pub async fn count(&self, kind: Kind) -> Result<usize> {

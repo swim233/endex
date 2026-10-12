@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
+use oar_ocr::core::config::OrtSessionConfig;
 use oar_ocr::domain::tasks::TextDetectionConfig;
 use oar_ocr::oarocr::{OAROCR, OAROCRBuilder};
 use oar_ocr::processors::LimitType;
@@ -23,7 +24,9 @@ pub struct PaddleOcr {
 }
 
 impl PaddleOcr {
-    pub fn new(model_dir: &Path) -> Result<Self> {
+    /// `threads` caps ONNX Runtime's intra-op threads (its default: one per core) and lets idle
+    /// workers sleep instead of spinning, so that a background pipeline leaves the cores free.
+    pub fn new(model_dir: &Path, threads: Option<usize>) -> Result<Self> {
         for name in [DET_MODEL, REC_MODEL, DICT] {
             let path = model_dir.join(name);
             anyhow::ensure!(
@@ -40,14 +43,21 @@ impl PaddleOcr {
             max_side_len: Some(4000),
             ..Default::default()
         };
-        let pipeline = OAROCRBuilder::new(
+        let mut builder = OAROCRBuilder::new(
             model_dir.join(DET_MODEL),
             model_dir.join(REC_MODEL),
             model_dir.join(DICT),
         )
-        .text_detection_config(detection)
-        .build()
-        .context("building the OCR pipeline")?;
+        .text_detection_config(detection);
+        if let Some(threads) = threads {
+            let mut session = OrtSessionConfig::new()
+                .with_intra_threads(threads)
+                .with_inter_threads(1);
+            session.session_config_entries =
+                Some([("session.intra_op.allow_spinning".into(), "0".into())].into());
+            builder = builder.ort_session(session);
+        }
+        let pipeline = builder.build().context("building the OCR pipeline")?;
         Ok(Self { pipeline })
     }
 }

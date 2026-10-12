@@ -1,12 +1,18 @@
-//! endexd on the synthetic smoke-fixture index, called over a private session bus.
-//! Run with `just dbus-test` (needs the index from `just smoke`).
+//! endexd over a private session bus: read-only on the synthetic smoke-fixture index, and as
+//! the writer keeping a temporary folder indexed. Run with `just dbus-test` (needs the index
+//! from `just smoke`). Every daemon gets its own config and data_dir, under target/tmp or
+//! `$ENDEX_TEST_DIR`.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
+use endex_core::config::default_toml;
+use endex_core::config::edit::{self, ConfigDoc};
+use endex_core::config::{Source, SourceKind};
 use zbus::zvariant::{OwnedValue, Value};
 
 type Dict = HashMap<String, OwnedValue>;
@@ -24,22 +30,45 @@ impl Drop for Daemon {
     }
 }
 
-#[tokio::test]
-#[ignore = "needs the smoke-fixture index and a private bus: just dbus-test"]
-async fn search_preview_and_status() -> Result<()> {
+/// A fresh folder for this test: in `$ENDEX_TEST_DIR` if set, else in target/tmp.
+fn test_dir(name: &str) -> Result<PathBuf> {
+    let base = std::env::var_os("ENDEX_TEST_DIR")
+        .map_or_else(|| PathBuf::from(env!("CARGO_TARGET_TMPDIR")), PathBuf::from);
+    let dir = base.join(name);
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// A config of its own, with `data_dir` next to it.
+fn temp_config(name: &str, sources: &[Source]) -> Result<(PathBuf, PathBuf)> {
+    let dir = test_dir(name)?;
+    let mut doc = ConfigDoc::parse(&default_toml())?;
+    doc.set(
+        "data_dir",
+        dir.join("data").to_string_lossy().as_ref().into(),
+    )?;
+    doc.set("index.sources", edit::sources(sources))?;
+    let config = dir.join("config.toml");
+    fs::write(&config, doc.to_string())?;
+    Ok((dir, config))
+}
+
+async fn start(config: &Path, data_dir: Option<&Path>) -> Result<(Daemon, zbus::Proxy<'static>)> {
     ensure!(
         std::env::var_os("ENDEX_PRIVATE_BUS").is_some(),
         "run under dbus-run-session via `just dbus-test`, not on the desktop's bus"
     );
-    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/generated")
-        .canonicalize()
-        .context("no smoke fixtures: run `just smoke`")?;
-    let _daemon = Daemon(
-        Command::new(env!("CARGO_BIN_EXE_endexd"))
-            .env("ENDEX_DATA_DIR", fixtures.join("db"))
-            .spawn()?,
-    );
+    let mut command = Command::new(env!("CARGO_BIN_EXE_endexd"));
+    command
+        .arg("--config")
+        .arg(config)
+        .env_remove("ENDEX_DATA_DIR")
+        .env("ENDEX_DEBUG_BATTERY", "ac");
+    if let Some(dir) = data_dir {
+        command.arg("--data-dir").arg(dir);
+    }
+    let daemon = Daemon(command.spawn()?);
     let bus = zbus::Connection::session().await?;
     let dbus = zbus::fdo::DBusProxy::new(&bus).await?;
     let started = Instant::now();
@@ -52,14 +81,32 @@ async fn search_preview_and_status() -> Result<()> {
     }
     let proxy = zbus::Proxy::new(&bus, NAME, PATH, NAME).await?;
     let version: u32 = proxy.get_property("Version").await?;
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
+    Ok((daemon, proxy))
+}
+
+#[tokio::test]
+#[ignore = "needs the smoke-fixture index and a private bus: just dbus-test"]
+async fn read_only_search_preview_and_status() -> Result<()> {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/generated")
+        .canonicalize()
+        .context("no smoke fixtures: run `just smoke`")?;
+    let (_, config) = temp_config("dbus-read-only", &[])?;
+    let (_daemon, proxy) = start(&config, Some(&fixtures.join("db"))).await?;
 
     let status: Dict = proxy.call("Status", &()).await?;
     assert_eq!(string(&status, "state")?, "ready");
+    assert_eq!(string(&status, "mode")?, "read_only");
     assert_eq!(number(&status, "doc_files")?, 14);
     assert_eq!(number(&status, "image_files")?, 18);
     assert!(number(&status, "doc_chunks")? >= 14);
     assert_eq!(string(&status, "query_device")?, "cpu");
+    let error = proxy
+        .call::<_, _, ()>("Rescan", &())
+        .await
+        .expect_err("read-only");
+    assert!(error.to_string().contains("ReadOnly"), "{error}");
 
     let recipe = fixtures.join("docs/recipes/hongshaorou.md");
     let screenshot = fixtures.join("images/屏幕截图_20260222_123000_recipe.png");
@@ -117,6 +164,116 @@ async fn search_preview_and_status() -> Result<()> {
         .await
         .expect_err("unknown id");
     assert!(error.to_string().contains("NotFound"), "{error}");
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "needs the embedding model and a private bus: just dbus-test"]
+async fn writer_keeps_a_folder_indexed() -> Result<()> {
+    let dir = test_dir("dbus-writer-src")?;
+    fs::create_dir_all(dir.join("notes"))?;
+    let (notes, todo) = (dir.join("notes/redis.md"), dir.join("todo.txt"));
+    fs::write(&notes, "# Redis\n\n缓存过期策略和内存淘汰的配置笔记。\n")?;
+    fs::write(&todo, "Buy oat milk and renew the library card.\n")?;
+    let source = Source {
+        path: dir.clone(),
+        kind: SourceKind::All,
+    };
+    let (_, config) = temp_config("dbus-writer", &[source])?;
+    let (_daemon, proxy) = start(&config, None).await?;
+
+    // Initial index, then search.
+    let state = wait_state(&proxy, |s| s == "idle").await?;
+    let status: Dict = proxy.call("Status", &()).await?;
+    assert_eq!(string(&status, "mode")?, "writer");
+    assert_eq!(number(&status, "doc_files")?, 2, "{state:?}");
+    assert_eq!(
+        top(&proxy, "Redis 内存淘汰", "hybrid").await?,
+        Some(notes.clone())
+    );
+
+    // An edit becomes searchable through the watch; a deleted file disappears.
+    fs::write(&notes, "# Redis\n\n缓存过期策略。新增：zebrafinch 实验。\n")?;
+    wait_for(|| async { Ok(top(&proxy, "zebrafinch", "keyword").await? == Some(notes.clone())) })
+        .await?;
+    fs::remove_file(&todo)?;
+    wait_for(|| async {
+        Ok(top(&proxy, "oat milk library card", "keyword")
+            .await?
+            .is_none())
+    })
+    .await?;
+
+    // Settings round trip: applied to the file with its comments, then in effect.
+    let rules = Value::from(vec!["notes/"]);
+    let reply: Dict = proxy
+        .call(
+            "ApplySettings",
+            &(HashMap::from([("exclude.rules", &rules)]),),
+        )
+        .await?;
+    assert!(reply["applied"].downcast_ref::<bool>()?);
+    let text = fs::read_to_string(&config)?;
+    assert!(text.contains("# Extra rules in .gitignore syntax") && text.contains("\"notes/\""));
+    let settings: Dict = proxy.call("GetSettings", &()).await?;
+    assert_eq!(
+        Vec::<String>::try_from(settings["exclude.rules"].try_clone()?)?,
+        ["notes/"]
+    );
+    wait_for(|| async { Ok(top(&proxy, "zebrafinch", "keyword").await?.is_none()) }).await?;
+    let bad = Value::from(0u32);
+    let reply: Dict = proxy
+        .call(
+            "ApplySettings",
+            &(HashMap::from([("resources.threads.mid", &bad)]),),
+        )
+        .await?;
+    assert!(!reply["applied"].downcast_ref::<bool>()?);
+    let errors = HashMap::<String, String>::try_from(reply["errors"].try_clone()?)?;
+    assert!(errors.contains_key("resources.threads.mid"), "{errors:?}");
+
+    // Pause, then resume.
+    proxy.call::<_, _, ()>("Pause", &()).await?;
+    let state = wait_state(&proxy, |s| s == "paused").await?;
+    assert_eq!(string(&state, "reason")?, "user");
+    proxy.call::<_, _, ()>("Resume", &()).await?;
+    wait_state(&proxy, |s| s == "idle").await?;
+    Ok(())
+}
+
+/// The top document for `query`, if any.
+async fn top(proxy: &zbus::Proxy<'_>, query: &str, mode: &str) -> Result<Option<PathBuf>> {
+    let (_, docs, _): (u32, Vec<Dict>, Vec<Dict>) = proxy
+        .call("Search", &(query, mode, HashMap::<&str, Value>::new()))
+        .await?;
+    docs.first()
+        .map(|d| string(d, "path").map(PathBuf::from))
+        .transpose()
+}
+
+async fn wait_state(proxy: &zbus::Proxy<'_>, wanted: impl Fn(&str) -> bool) -> Result<Dict> {
+    let started = Instant::now();
+    loop {
+        let state: Dict = proxy.get_property("IndexState").await?;
+        if wanted(&string(&state, "state")?) {
+            return Ok(state);
+        }
+        if started.elapsed() > Duration::from_secs(60) {
+            bail!("IndexState stayed {state:?}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn wait_for<F: Future<Output = Result<bool>>>(check: impl Fn() -> F) -> Result<()> {
+    let started = Instant::now();
+    while !check().await? {
+        ensure!(
+            started.elapsed() < Duration::from_secs(30),
+            "condition not met within 30 s"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     Ok(())
 }
 

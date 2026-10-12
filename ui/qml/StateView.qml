@@ -6,8 +6,8 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import Endex
 
-// Everything that is not a result list: tips for an empty query, no results, no daemon,
-// nothing indexed yet, an index being rebuilt, an unusable index.
+// Everything that is not a result list: recent searches and tips for an empty query, no
+// results, no daemon, no folders yet, an index that cannot be read now.
 Item {
     id: stateView
 
@@ -15,9 +15,13 @@ Item {
     required property string query
     required property string mode
     required property Daemon daemon
+    // The selected recent search (↑↓ in the empty field), -1 for none.
+    property int recentIndex: -1
 
     signal modeRequested(string id)
     signal copy(string text)
+    signal rerun(string query)
+    signal settingsRequested(string page, bool welcome)
 
     clip: true
 
@@ -63,23 +67,27 @@ Item {
         case "first":
             return {
                 icon: "folder-new",
+                title: qsTr("还没有要索引的目录"),
+                text: qsTr("Endex 不会自动扫描「图片」和「文档」，先选好要索引的目录。"),
+            }
+        case "empty":
+            return {
+                icon: "folder-open",
                 title: qsTr("还没有索引"),
-                text: qsTr("在终端里列出要索引的文件并建立索引，完成后就能搜索。设置窗口（M3）会带你选目录。"),
-                command: "find ~/Documents -type f > ~/endex-files.txt\nendex index --manifest ~/endex-files.txt",
+                text: qsTr("守护进程以只读方式提供 %1，那里还没有建好的索引。").arg(daemon.status.index_path ?? ""),
             }
         case "broken":
             return {
                 icon: "data-error",
                 title: qsTr("索引暂时不能用"),
-                text: qsTr("如果换过嵌入模型或前缀风格，需要用原来的清单重建索引。"),
+                text: qsTr("如果换过嵌入模型，需要在设置的「索引状态」里重建索引。"),
                 error: daemon.error,
-                command: "endex index --rebuild --manifest <清单文件>",
             }
         case "rebuilding":
             return {
                 icon: "view-refresh",
                 title: qsTr("正在重建索引…"),
-                text: qsTr("endex index 正在重建索引，完成后这里会自动刷新。"),
+                text: qsTr("索引正在被替换，完成后这里会自动刷新。"),
             }
         default:
             return {
@@ -156,6 +164,23 @@ Item {
                 onClicked: stateView.daemon.start()
             }
             QQC2.Button {
+                objectName: "firstRunSettings"
+                visible: stateView.view === "first"
+                text: qsTr("打开设置 › 索引目录")
+                icon.name: "configure"
+                highlighted: true
+                Accessible.defaultButton: true
+                focusPolicy: Qt.NoFocus
+                onClicked: stateView.settingsRequested("dirs", true)
+            }
+            QQC2.Button {
+                visible: stateView.view === "broken" && stateView.daemon.status.mode === "writer"
+                text: qsTr("打开设置 › 索引状态")
+                icon.name: "configure"
+                focusPolicy: Qt.NoFocus
+                onClicked: stateView.settingsRequested("status", false)
+            }
+            QQC2.Button {
                 visible: (stateView.view === "none" || stateView.view === "failed") && stateView.mode !== "vector"
                 text: qsTr("改用向量模式（按语义找）")
                 focusPolicy: Qt.NoFocus
@@ -169,83 +194,143 @@ Item {
             }
         }
 
-        Rectangle {
+        CommandBox {
             Layout.fillWidth: true
             visible: !!stateView.content.command
-            implicitHeight: commandRow.implicitHeight + Kirigami.Units.largeSpacing * 2
-            radius: Kirigami.Units.cornerRadius
-            color: Kirigami.Theme.alternateBackgroundColor
-            border.color: Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, Kirigami.Theme.textColor, 0.2)
+            command: stateView.content.command ?? ""
+            onCopy: text => stateView.copy(text)
+        }
 
-            RowLayout {
-                id: commandRow
+        ColumnLayout {
+            Layout.alignment: Qt.AlignHCenter
+            Layout.topMargin: Kirigami.Units.largeSpacing
+            visible: stateView.view === "first"
+            spacing: Kirigami.Units.smallSpacing
 
-                anchors.fill: parent
-                anchors.margins: Kirigami.Units.largeSpacing
+            Repeater {
+                model: [
+                    qsTr("在设置里添加要索引的目录，例如 ~/Notes"),
+                    qsTr("点「应用」，等首次索引完成（之后只做增量）"),
+                    qsTr("按你绑定的快捷键开始搜索"),
+                ]
 
-                QQC2.Label {
-                    textFormat: Text.PlainText
-                    Layout.fillWidth: true
-                    text: stateView.content.command ?? ""
-                    font.family: "monospace"
-                    wrapMode: Text.WrapAnywhere
-                }
-                QQC2.ToolButton {
-                    icon.name: "edit-copy"
-                    display: QQC2.AbstractButton.IconOnly
-                    text: qsTr("复制命令")
-                    focusPolicy: Qt.NoFocus
-                    onClicked: stateView.copy(stateView.content.command)
-                    QQC2.ToolTip.text: text
-                    QQC2.ToolTip.visible: hovered
+                delegate: RowLayout {
+                    id: step
+
+                    required property string modelData
+                    required property int index
+
+                    spacing: Kirigami.Units.largeSpacing
+
+                    KeyCap {
+                        text: step.index + 1
+                    }
+                    QQC2.Label {
+                        textFormat: Text.PlainText
+                        text: step.modelData
+                        color: step.index === 0 ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
+                    }
                 }
             }
         }
 
-        GridLayout {
+        RowLayout {
             Layout.alignment: Qt.AlignHCenter
             Layout.topMargin: Kirigami.Units.largeSpacing
             visible: stateView.view === "tips"
-            columns: 2
-            columnSpacing: Kirigami.Units.largeSpacing * 2
-            rowSpacing: Kirigami.Units.smallSpacing
+            spacing: Kirigami.Units.gridUnit * 2
 
-            Repeater {
-                model: stateView.tips
+            ColumnLayout {
+                Layout.alignment: Qt.AlignTop
+                Layout.preferredWidth: Kirigami.Units.gridUnit * 12
+                visible: stateView.daemon.recent.length > 0
+                spacing: 0
 
-                delegate: RowLayout {
-                    id: keys
+                QQC2.Label {
+                    textFormat: Text.PlainText
+                    text: qsTr("最近搜索")
+                    font.bold: true
+                    color: Kirigami.Theme.disabledTextColor
+                }
+                Repeater {
+                    model: stateView.daemon.recent
 
-                    required property var modelData
-                    required property int index
+                    QQC2.ItemDelegate {
+                        id: recentRow
 
-                    Layout.row: index
-                    Layout.column: 0
-                    Layout.alignment: Qt.AlignRight
+                        required property string modelData
+                        required property int index
 
-                    Repeater {
-                        model: keys.modelData[0]
+                        Layout.fillWidth: true
+                        text: modelData
+                        highlighted: index === stateView.recentIndex
+                        focusPolicy: Qt.NoFocus
+                        onClicked: stateView.rerun(modelData)
 
-                        KeyCap {
-                            required property string modelData
+                        // Queries are user text: never rich text.
+                        contentItem: RowLayout {
+                            spacing: Kirigami.Units.smallSpacing
 
-                            text: modelData
+                            Kirigami.Icon {
+                                source: "chronometer"
+                                implicitWidth: Kirigami.Units.iconSizes.small
+                                implicitHeight: implicitWidth
+                            }
+                            QQC2.Label {
+                                Layout.fillWidth: true
+                                textFormat: Text.PlainText
+                                text: recentRow.modelData
+                                elide: Text.ElideRight
+                                color: recentRow.highlighted ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
+                            }
                         }
                     }
                 }
             }
 
-            Repeater {
-                model: stateView.tips
+            GridLayout {
+                Layout.alignment: Qt.AlignTop
+                columns: 2
+                columnSpacing: Kirigami.Units.largeSpacing * 2
+                rowSpacing: Kirigami.Units.smallSpacing
 
-                QQC2.Label {
-                    required property var modelData
-                    required property int index
+                Repeater {
+                    model: stateView.tips
 
-                    textFormat: Text.PlainText
-                    Layout.row: index
-                    Layout.column: 1
-                    text: modelData[1]
+                    delegate: RowLayout {
+                        id: keys
+
+                        required property var modelData
+                        required property int index
+
+                        Layout.row: index
+                        Layout.column: 0
+                        Layout.alignment: Qt.AlignRight
+
+                        Repeater {
+                            model: keys.modelData[0]
+
+                            KeyCap {
+                                required property string modelData
+
+                                text: modelData
+                            }
+                        }
+                    }
+                }
+
+                Repeater {
+                    model: stateView.tips
+
+                    QQC2.Label {
+                        required property var modelData
+                        required property int index
+
+                        textFormat: Text.PlainText
+                        Layout.row: index
+                        Layout.column: 1
+                        text: modelData[1]
+                    }
                 }
             }
         }

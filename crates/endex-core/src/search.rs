@@ -9,8 +9,8 @@ use anyhow::{Result, bail};
 
 use crate::Kind;
 use crate::catalog::Catalog;
-use crate::config::Config;
-use crate::embed::{self, Device, Embedder};
+use crate::config::{Config, parse_enum};
+use crate::embed::{self, Device, Embedder, PrefixStyle};
 use crate::store::{Store, StoredHit, TableUnavailable};
 use crate::terms::{Analyzer, is_cjk};
 
@@ -142,8 +142,12 @@ pub struct Searcher {
     store: Option<Store>,
     analyzer: Analyzer,
     embedder: Option<Box<dyn Embedder>>,
+    /// The prefix style of the indexed vectors, which queries must use.
+    query_style: PrefixStyle,
     /// When the table last failed to load.
     unavailable_at: Option<Instant>,
+    /// Never writes into the index directory (see [`Searcher::untouched`]).
+    untouched: bool,
 }
 
 impl Searcher {
@@ -154,19 +158,57 @@ impl Searcher {
             store: None,
             analyzer: Analyzer::new(),
             embedder: None,
+            query_style: config.embedding.prefix_style,
             unavailable_at: None,
+            untouched: false,
         }
     }
 
-    /// Follows `endex index` runs of other processes: new table versions, a table created
-    /// since, a rebuilt one, or a model change.
+    /// For indexes that must stay as they are, such as the public eval sets: not even SQLite's
+    /// shared memory is written.
+    pub fn untouched(config: &Config) -> Self {
+        Self {
+            untouched: true,
+            ..Self::new(config)
+        }
+    }
+
+    /// A changed config (endexd reloads it); the query model is reloaded if it changed.
+    pub fn set_config(&mut self, config: &Config) {
+        if config.embedding != self.config.embedding
+            || config.devices.query != self.config.devices.query
+        {
+            self.embedder = None;
+        }
+        self.config = config.clone();
+    }
+
+    /// Follows index writers (`endex index`, endexd's indexer): new table versions, a table
+    /// created since, a rebuilt one, or a model change.
     pub async fn refresh(&mut self) -> Result<()> {
         let catalog = self.config.catalog_path();
         if catalog.exists() {
-            Catalog::open_read_only(&catalog)?.check_embedding_identity(
-                &embed::model_identity(&self.config)?,
-                self.config.embedding.prefix_style.as_str(),
-            )?;
+            let catalog = match self.untouched {
+                true => Catalog::open_untouched(&catalog)?,
+                false => Catalog::open_read_only(&catalog)?,
+            };
+            // Vectors of another model are not comparable; another prefix style only means
+            // that queries keep the index's style until it is rebuilt.
+            let model = embed::model_identity(&self.config)?;
+            if let Some(stored) = catalog.meta("model")?.filter(|m| *m != model) {
+                bail!(
+                    "the index was built with model `{stored}` but the config names `{model}`; \
+                     rebuild the index"
+                );
+            }
+            let style = catalog
+                .meta("prefix_style")?
+                .and_then(|s| parse_enum(&s).ok())
+                .unwrap_or(self.config.embedding.prefix_style);
+            if style != self.query_style {
+                self.query_style = style;
+                self.embedder = None;
+            }
         }
         if let Some(store) = &self.store
             && store.checkout_latest().await.is_ok()
@@ -345,10 +387,17 @@ impl Searcher {
         self.embed_query("warm-up").map(drop)
     }
 
-    /// Queries always embed on the CPU: low latency, no GPU wake-up.
+    /// Queries embed on `devices.query`, the CPU by default: low latency, no GPU wake-up.
     fn embed_query(&mut self, query: &str) -> Result<Vec<f32>> {
         if self.embedder.is_none() {
-            self.embedder = Some(embed::open(&self.config, Device::Cpu)?);
+            let mut config = self.config.clone();
+            config.embedding.prefix_style = self.query_style;
+            let device = config.devices.query;
+            let embedder = embed::open(&config, device, None).or_else(|error| match device {
+                Device::Gpu => embed::open(&config, Device::Cpu, None),
+                Device::Cpu => Err(error),
+            })?;
+            self.embedder = Some(embedder);
         }
         self.embedder
             .as_mut()

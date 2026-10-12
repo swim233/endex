@@ -21,8 +21,9 @@ pub trait Embedder {
     fn embed_image(&mut self, bytes: &[u8]) -> Result<Vec<f32>>;
 }
 
-/// The configured embedder on `device`. The only place that picks the implementation.
-pub fn open(config: &Config, device: Device) -> Result<Box<dyn Embedder>> {
+/// The configured embedder on `device`, with at most `threads` CPU threads if given. The only
+/// place that picks the implementation.
+pub fn open(config: &Config, device: Device, threads: Option<usize>) -> Result<Box<dyn Embedder>> {
     let cache_dir = config.litert_cache_dir();
     fs::create_dir_all(&cache_dir)?;
     let engine = litert::EngineConfig {
@@ -30,6 +31,7 @@ pub fn open(config: &Config, device: Device) -> Result<Box<dyn Embedder>> {
         model: &config.embedding.model,
         cache_dir: &cache_dir,
         device,
+        threads,
     };
     Ok(Box::new(litert::LiteRtEmbedder::new(
         &engine,
@@ -47,7 +49,8 @@ pub fn model_identity(config: &Config) -> Result<String> {
     Ok(format!("{name}:{size}:{DIM}"))
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Device {
     Cpu,
     Gpu,

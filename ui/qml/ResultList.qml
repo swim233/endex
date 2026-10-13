@@ -97,11 +97,11 @@ QQC2.ScrollView {
             }
 
             Grid {
-                x: Kirigami.Units.largeSpacing
+                x: Look.largeSpacing
                 width: content.width - 2 * x
                 columns: 3
-                spacing: Kirigami.Units.smallSpacing
-                bottomPadding: Kirigami.Units.largeSpacing
+                spacing: Look.smallSpacing
+                bottomPadding: Look.largeSpacing
 
                 Repeater {
                     id: images
@@ -111,7 +111,7 @@ QQC2.ScrollView {
                     model: list.results.images
 
                     ImageCell {
-                        width: Math.floor((content.width - 2 * Kirigami.Units.largeSpacing - 2 * Kirigami.Units.smallSpacing) / 3)
+                        width: Math.floor((content.width - 2 * Look.largeSpacing - 2 * Look.smallSpacing) / 3)
                         selected: list.results.group === 1 && list.results.row === index
                         mode: list.mode
                         results: list.results
@@ -142,11 +142,11 @@ QQC2.ScrollView {
 
         width: content.width
         height: Kirigami.Units.gridUnit * 2
-        spacing: Kirigami.Units.smallSpacing
+        spacing: Look.smallSpacing
 
         QQC2.Label {
             textFormat: Text.PlainText
-            Layout.leftMargin: Kirigami.Units.largeSpacing * 1.5
+            Layout.leftMargin: Look.largeSpacing * 1.5
             text: header.label
             font.bold: true
         }
@@ -183,9 +183,9 @@ QQC2.ScrollView {
         }
         QQC2.Label {
             textFormat: Text.PlainText
-            Layout.rightMargin: Kirigami.Units.largeSpacing * 1.5
+            Layout.rightMargin: Look.largeSpacing * 1.5
             text: header.other
-            font: Kirigami.Theme.smallFont
+            font: Look.smallFont
             color: Kirigami.Theme.disabledTextColor
         }
     }

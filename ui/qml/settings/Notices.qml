@@ -25,7 +25,7 @@ ColumnLayout {
 
     spacing: Kirigami.Units.smallSpacing
 
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         // Not for the moment a restart takes.
         visible: !notices.reachable && !notices.daemon.restarting
@@ -38,13 +38,13 @@ ColumnLayout {
             onTriggered: notices.daemon.start()
         }
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: notices.reachable && notices.status.mode === "read_only"
         type: Kirigami.MessageType.Information
         text: qsTr("守护进程以只读方式运行（--data-dir），这里的改动不能应用。")
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: (notices.status.config_error ?? "") !== ""
         type: Kirigami.MessageType.Error
@@ -56,7 +56,7 @@ ColumnLayout {
             onTriggered: notices.openFile(notices.status.config_path)
         }
     }
-    Kirigami.InlineMessage {
+    Notice {
         id: restartNotice
 
         readonly property bool writer: notices.status.mode === "writer"
@@ -85,7 +85,7 @@ ColumnLayout {
             },
         ]
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: notices.page !== "status" && notices.daemon.indexState.state === "needs_rebuild"
         type: Kirigami.MessageType.Warning
@@ -96,13 +96,13 @@ ColumnLayout {
             onTriggered: notices.pageRequested("status")
         }
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: (notices.settings.errors[""] ?? "") !== ""
         type: Kirigami.MessageType.Error
         text: qsTr("<b>config.toml 没有写入</b>：%1").arg(Markup.escape(notices.settings.errors[""]))
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         // While endexd is unreachable the first notice says it all.
         visible: notices.failure !== "" && notices.reachable

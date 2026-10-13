@@ -73,8 +73,16 @@ impl App {
         if config == *current {
             return;
         }
+        // The look is endex-ui's business: the search thread, indexer and watcher keep going.
+        let look_only = Config {
+            appearance: current.appearance.clone(),
+            ..config.clone()
+        } == *current;
         let config = Arc::new(config);
         self.shared.set_config(Arc::clone(&config));
+        if look_only {
+            return;
+        }
         self.worker.configure((*config).clone());
         if let Some(indexer) = &self.indexer {
             indexer.send(Command::Configure(Arc::clone(&config)));

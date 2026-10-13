@@ -4,8 +4,10 @@
 
 #include <QObject>
 #include <QPointer>
+#include <QSize>
 #include <QtQml/qqmlregistration.h>
 
+class Appearance;
 class QQuickWindow;
 class SettingsWindow;
 namespace LayerShellQt
@@ -21,7 +23,7 @@ class Popup : public QObject
     Q_CLASSINFO("D-Bus Interface", "org.endex.Ui1")
 
 public:
-    void attach(QQuickWindow *window, SettingsWindow *settings);
+    void attach(QQuickWindow *window, SettingsWindow *settings, Appearance *appearance);
 
     Q_INVOKABLE void hide();
     // Default application; hides the popup if it asked.
@@ -54,9 +56,20 @@ private:
     // Hands the default application or file manager an activation token, then hides the popup
     // if the action came from it.
     void launch(const QString &path, bool reveal);
+    // Size and blur for the screen it is on; the top margin shrinks on low screens.
+    void fit();
 
     QPointer<QQuickWindow> m_window;
     SettingsWindow *m_settings = nullptr;
+    Appearance *m_appearance = nullptr;
+    // What fit() last applied.
+    struct Fit {
+        QSize size;
+        int top = 0;
+        bool blur = false;
+        int radius = 0;
+        bool operator==(const Fit &) const = default;
+    } m_fit;
     LayerShellQt::Window *m_layer = nullptr;
     bool m_wasActive = false;
 };

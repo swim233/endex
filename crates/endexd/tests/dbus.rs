@@ -206,31 +206,46 @@ async fn writer_keeps_a_folder_indexed() -> Result<()> {
 
     // Settings round trip: applied to the file with its comments, then in effect.
     let rules = Value::from(vec!["notes/"]);
+    let (font_size, accent) = (Value::from(10.5), Value::from("#8E44AD"));
     let reply: Dict = proxy
         .call(
             "ApplySettings",
-            &(HashMap::from([("exclude.rules", &rules)]),),
+            &(HashMap::from([
+                ("exclude.rules", &rules),
+                ("appearance.font_size", &font_size),
+                ("appearance.accent", &accent),
+            ]),),
         )
         .await?;
     assert!(reply["applied"].downcast_ref::<bool>()?);
     let text = fs::read_to_string(&config)?;
     assert!(text.contains("# Extra rules in .gitignore syntax") && text.contains("\"notes/\""));
+    assert!(text.contains("[appearance]") && text.contains("font_size = 10.5"));
     let settings: Dict = proxy.call("GetSettings", &()).await?;
     assert_eq!(
         Vec::<String>::try_from(settings["exclude.rules"].try_clone()?)?,
         ["notes/"]
     );
+    assert_eq!(
+        settings["appearance.font_size"].downcast_ref::<f64>()?,
+        10.5
+    );
+    assert_eq!(string(&settings, "appearance.accent")?, "#8e44ad");
     wait_for(|| async { Ok(top(&proxy, "zebrafinch", "keyword").await?.is_none()) }).await?;
-    let bad = Value::from(0u32);
+    let (bad, bad_accent) = (Value::from(0u32), Value::from("blue"));
     let reply: Dict = proxy
         .call(
             "ApplySettings",
-            &(HashMap::from([("resources.threads.mid", &bad)]),),
+            &(HashMap::from([
+                ("resources.threads.mid", &bad),
+                ("appearance.accent", &bad_accent),
+            ]),),
         )
         .await?;
     assert!(!reply["applied"].downcast_ref::<bool>()?);
     let errors = HashMap::<String, String>::try_from(reply["errors"].try_clone()?)?;
     assert!(errors.contains_key("resources.threads.mid"), "{errors:?}");
+    assert!(errors.contains_key("appearance.accent"), "{errors:?}");
 
     // Pause, then resume.
     proxy.call::<_, _, ()>("Pause", &()).await?;

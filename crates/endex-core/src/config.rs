@@ -36,6 +36,8 @@ pub struct Config {
     #[serde(default)]
     pub log: LogConfig,
     #[serde(default)]
+    pub appearance: AppearanceConfig,
+    #[serde(default)]
     pub sample: SampleConfig,
     /// Keeps the index and catalog elsewhere (e.g. one isolated index per eval set) while
     /// models and caches stay shared in `data_dir`.
@@ -290,6 +292,56 @@ impl Default for LogConfig {
     }
 }
 
+/// How endex-ui looks (its 「外观」 page). endexd only stores and checks it; the allowed values
+/// are listed with the settings keys in endexd.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct AppearanceConfig {
+    /// `plasma`, `proto`, `glass` or `custom`; a preset other than `custom` decides the style
+    /// keys below except `scheme` and the popup size details.
+    pub preset: String,
+    /// Palette under `custom`: `plasma` (Breeze) or `proto` (the mockup's).
+    pub base: String,
+    /// `system` (Plasma's light or dark), `light` or `dark`.
+    pub scheme: String,
+    /// `default` or `#rrggbb`.
+    pub accent: String,
+    pub font: String,
+    /// Points, 8–14 in steps of 0.5.
+    pub font_size: f64,
+    pub density: String,
+    pub radius: u32,
+    /// `default` (1100×640), `small` (940×620), `screen` or `custom`.
+    pub popup_size: String,
+    pub screen_percent: u32,
+    pub popup_width: u32,
+    pub popup_height: u32,
+    /// Percent, 0 (opaque) to 60.
+    pub translucency: u32,
+    pub blur: bool,
+}
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            preset: "plasma".into(),
+            base: "plasma".into(),
+            scheme: "system".into(),
+            accent: "default".into(),
+            font: "system".into(),
+            font_size: 10.0,
+            density: "comfortable".into(),
+            radius: 5,
+            popup_size: "default".into(),
+            screen_percent: 60,
+            popup_width: 1100,
+            popup_height: 640,
+            translucency: 0,
+            blur: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SampleConfig {
@@ -328,6 +380,8 @@ impl Config {
         e.library = expand_home(&e.library);
         e.model = expand_home(&e.model);
         e.tokenizer = expand_home(&e.tokenizer);
+        // "#ABCDEF" by hand means the same colour as the settings window's "#abcdef".
+        config.appearance.accent.make_ascii_lowercase();
         Ok(config)
     }
 
@@ -464,6 +518,36 @@ gpu_idle_release_min = 2
 [log]
 # Record searches and opened results in <data_dir>/usage.jsonl (never leaves this machine).
 usage = true
+
+[appearance]
+# How the popup and the settings window look (settings window, 「外观」). A preset other than
+# "custom" decides the style: "plasma" (follow the Plasma theme), "proto" (the original
+# mockup) or "glass" (translucent and blurred).
+preset = "plasma"
+# Under "custom": the palette, "plasma" (Breeze) or "proto"; the accent, "default" or a hex
+# colour (#rrggbb); the font, "system", "noto_sans", "inter", "noto_serif" or "jetbrains_mono",
+# and its size in points (8–14); "comfortable" or "compact" spacing; the corner radius in px
+# (0–16).
+base = "plasma"
+accent = "default"
+font = "system"
+font_size = 10.0
+density = "comfortable"
+radius = 5
+# "system" (follow Plasma's light or dark), "light" or "dark".
+scheme = "system"
+# Popup size: "default" (1100×640), "small" (940×620), "screen" (screen_percent of the screen's
+# width, 40–90) or "custom" (popup_width 480–1600 × popup_height 320–1000). Always fits the
+# screen.
+popup_size = "default"
+screen_percent = 60
+popup_width = 1100
+popup_height = 640
+# Popup translucency in percent (0–60), and KWin's blur behind it (its strength is set in
+# KWin's Blur effect).
+translucency = 0
+blur = false
+# An optional ~/.config/endex/theme.toml overrides colours, font and shape (see the README).
 
 [sample]
 # Seed for `endex sample`; the same seed reproduces the same test set.

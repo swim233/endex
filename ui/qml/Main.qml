@@ -152,10 +152,13 @@ Window {
             + ` banner=${banner.kind} index=${daemon.indexState.state ?? "-"} recent=${daemon.recent.length}`
             + ` recentIndex=${stateView.recentIndex} status=${status.stateText}`
             + ` session=${session.query ?? "-"} searched=${searched} reported=${sessionReported} usageLog=${daemon.status.usage_log}`
+            + ` size=${width}x${height} radius=${panel.radius} opacity=${Look.opacity} bg=${panel.color} text=${Kirigami.Theme.textColor}`
+            + ` highlight=${Kirigami.Theme.highlightColor} font=${Kirigami.Theme.defaultFont.family}/${Kirigami.Theme.defaultFont.pointSize}`
+            + ` small=${Look.smallFont.family}/${Look.smallFont.pointSize} spacing=${Look.largeSpacing}`
+
     }
 
-    width: 1100
-    height: 640
+    // The size comes from Appearance (Popup::fit), for the screen it shows on.
     color: "transparent"
     title: qsTr("Endex 搜索")
     // A menu left open must not come back with the next summon.
@@ -181,8 +184,8 @@ Window {
             field.autoSelection = true
             root.daemon.refresh()
             root.daemon.fetchRecent()
-            if (!root.settings.loaded)
-                root.settings.load()
+            // Edits of config.toml by hand too (the look, the profile hint).
+            root.settings.load()
             // One search, not one more from the debounce: the index may have changed since.
             debounce.stop()
             if (field.text.trim() !== "")
@@ -270,9 +273,10 @@ Window {
         id: panel
 
         anchors.fill: parent
-        radius: Kirigami.Units.cornerRadius * 2
-        color: Kirigami.Theme.backgroundColor
-        border.color: Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, Kirigami.Theme.textColor, 0.25)
+        radius: Look.panelRadius
+        color: Qt.alpha(Kirigami.Theme.backgroundColor, Look.opacity)
+        border.color: Appearance.border.valid ? Appearance.border
+            : Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, Kirigami.Theme.textColor, 0.25)
         Kirigami.Theme.colorSet: Kirigami.Theme.Window
         Kirigami.Theme.inherit: false
 
@@ -283,8 +287,8 @@ Window {
 
             RowLayout {
                 Layout.fillWidth: true
-                Layout.margins: Kirigami.Units.largeSpacing * 1.5
-                spacing: Kirigami.Units.largeSpacing
+                Layout.margins: Look.largeSpacing * 1.5
+                spacing: Look.largeSpacing
 
                 QQC2.TextField {
                     id: field
@@ -296,9 +300,9 @@ Window {
                     objectName: "searchField"
                     Layout.fillWidth: true
                     font.pointSize: Kirigami.Theme.defaultFont.pointSize * 1.35
-                    leftPadding: searchIcon.width + Kirigami.Units.largeSpacing * 2
-                    rightPadding: clearButton.width + Kirigami.Units.largeSpacing
-                    placeholderText: qsTr("搜索文档和图片，试试「海边的日落」")
+                    leftPadding: searchIcon.width + Look.largeSpacing * 2
+                    rightPadding: clearButton.width + Look.largeSpacing
+                    placeholderText: qsTr("搜索文档和图片")
                     // Longer queries are cut by the daemon anyway.
                     maximumLength: 512
                     onTextChanged: {
@@ -353,7 +357,7 @@ Window {
                         id: searchIcon
 
                         anchors.left: parent.left
-                        anchors.leftMargin: Kirigami.Units.largeSpacing
+                        anchors.leftMargin: Look.largeSpacing
                         anchors.verticalCenter: parent.verticalCenter
                         width: Kirigami.Units.iconSizes.smallMedium
                         height: width
@@ -415,9 +419,9 @@ Window {
                 id: banner
 
                 Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.largeSpacing * 1.5
-                Layout.rightMargin: Kirigami.Units.largeSpacing * 1.5
-                Layout.bottomMargin: Kirigami.Units.largeSpacing
+                Layout.leftMargin: Look.largeSpacing * 1.5
+                Layout.rightMargin: Look.largeSpacing * 1.5
+                Layout.bottomMargin: Look.largeSpacing
                 daemon: root.daemon
                 profile: root.settings.saved["resources.profile"] ?? ""
                 onSettingsRequested: page => root.openSettings(page, false)

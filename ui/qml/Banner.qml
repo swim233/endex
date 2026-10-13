@@ -46,8 +46,8 @@ Rectangle {
     }
 
     visible: kind !== ""
-    implicitHeight: row.implicitHeight + Kirigami.Units.smallSpacing * 2
-    radius: Kirigami.Units.cornerRadius
+    implicitHeight: row.implicitHeight + Look.smallSpacing * 2
+    radius: Look.radius
     color: Qt.alpha(tone, 0.12)
     border.color: Qt.alpha(tone, 0.6)
 
@@ -55,9 +55,9 @@ Rectangle {
         id: row
 
         anchors.fill: parent
-        anchors.leftMargin: Kirigami.Units.largeSpacing
-        anchors.rightMargin: Kirigami.Units.smallSpacing
-        spacing: Kirigami.Units.largeSpacing
+        anchors.leftMargin: Look.largeSpacing
+        anchors.rightMargin: Look.smallSpacing
+        spacing: Look.largeSpacing
 
         Kirigami.Icon {
             implicitWidth: Kirigami.Units.iconSizes.small
@@ -108,7 +108,7 @@ Rectangle {
                 case "error":
                     return s.reason
                 case "needs_rebuild":
-                    return { model: qsTr("嵌入模型改了"), prefix_style: qsTr("前缀风格改了"), ocr: qsTr("OCR 设置改了") }[s.reason] ?? s.reason
+                    return { model: qsTr("已修改嵌入模型，等待重建索引"), prefix_style: qsTr("已修改前缀风格，等待重建索引"), ocr: qsTr("已修改 OCR 设置，等待重建索引") }[s.reason] ?? s.reason
                 case "rebuild_pending":
                     return s.reason === "battery" ? qsTr("电池供电时不重建；接上电源后开始") : qsTr("继续索引后开始")
                 case "battery": {
@@ -136,7 +136,7 @@ Rectangle {
             Layout.fillWidth: true
             textFormat: Text.PlainText
             elide: Text.ElideRight
-            font: Kirigami.Theme.smallFont
+            font: Look.smallFont
             text: {
                 const s = banner.s
                 const device = s.device === "gpu" ? "GPU" : s.device === "cpu" ? "CPU" : ""
@@ -153,17 +153,18 @@ Rectangle {
         QQC2.Label {
             visible: banner.kind === "indexing"
             textFormat: Text.PlainText
-            font: Kirigami.Theme.smallFont
+            font: Look.smallFont
             color: Kirigami.Theme.neutralTextColor
             text: qsTr("搜索结果可能不完整")
         }
-        QQC2.Button {
+        QQC2.Label {
             // A first build with many images: OCR dominates.
             visible: banner.kind === "indexing" && banner.profile !== "" && banner.profile !== "heavy" && (banner.s.images ?? 0) >= 100
-            flat: true
-            focusPolicy: Qt.NoFocus
-            text: qsTr("图片多，改用「重」档更快")
-            onClicked: banner.settingsRequested("resource")
+            Layout.rightMargin: Look.smallSpacing
+            textFormat: Text.PlainText
+            font: Look.smallFont
+            color: Kirigami.Theme.neutralTextColor
+            text: qsTr("图片较多，索引耗时较长")
         }
         QQC2.Button {
             objectName: "bannerContinue"
@@ -183,7 +184,7 @@ Rectangle {
             visible: banner.kind === "battery" || banner.kind === "rebuild_pending"
             flat: true
             focusPolicy: Qt.NoFocus
-            text: qsTr("资源档位")
+            text: qsTr("性能")
             onClicked: banner.settingsRequested("resource")
         }
         QQC2.Button {

@@ -6,7 +6,7 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import Endex
 
-// 资源档位: battery, priority, threads per profile, GPU release.
+// 性能: battery, priority, threads per profile, GPU release.
 Kirigami.FormLayout {
     id: page
 
@@ -15,9 +15,9 @@ Kirigami.FormLayout {
 
     readonly property var status: daemon.status
     readonly property var profiles: [
-        ["light", qsTr("轻"), qsTr("尽量不打扰，索引更慢")],
+        ["light", qsTr("轻"), qsTr("索引更慢，节约性能")],
         ["mid", qsTr("中"), qsTr("日常使用推荐")],
-        ["heavy", qsTr("重"), qsTr("尽快建完索引，风扇可能转起来")],
+        ["heavy", qsTr("重"), qsTr("尽快建立索引，可能占用较多性能")],
     ]
 
     Kirigami.Separator {
@@ -34,7 +34,7 @@ Kirigami.FormLayout {
             settings: page.settings
             key: "resources.pause_on_battery"
             text: qsTr("暂停索引")
-            hint: qsTr("接上电源后自动继续。浮窗仍然可以搜索已有的索引。")
+            hint: qsTr("暂停索引，等待电源重新接入")
         }
         RowLayout {
             spacing: Kirigami.Units.largeSpacing
@@ -71,7 +71,7 @@ Kirigami.FormLayout {
         settings: page.settings
         key: "resources.low_priority"
         text: qsTr("以低优先级运行索引")
-        hint: qsTr("降低处理器和磁盘优先级，不抢前台程序的资源。关掉后要重启守护进程才生效。")
+        hint: qsTr("降低处理器和磁盘优先级，重启守护进程后生效。")
     }
     ColumnLayout {
         Kirigami.FormData.label: qsTr("线程档位：")
@@ -162,11 +162,11 @@ Kirigami.FormLayout {
             }
             QQC2.Label {
                 textFormat: Text.PlainText
-                text: qsTr("分钟没有用到 GPU，就释放显存")
+                text: qsTr("分钟未使用 GPU 后释放显存")
             }
         }
         Hint {
-            text: qsTr("0 表示不释放。释放后再用到 GPU，需要重新载入模型，约 4 s。默认 2 分钟。")
+            text: qsTr("设置为 0 时候不再自动释放显存")
         }
     }
 }

@@ -40,10 +40,10 @@ ColumnLayout {
 
     spacing: Kirigami.Units.largeSpacing
 
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: true
-        text: qsTr("<b>手动设置</b>：Endex 不会改动任何快捷键，请按下面的步骤在系统设置里绑定。")
+        text: qsTr("<b>手动设置</b>：请按下面的步骤在系统设置里绑定。")
     }
 
     Repeater {
@@ -95,7 +95,7 @@ ColumnLayout {
         Layout.topMargin: Kirigami.Units.largeSpacing
         textFormat: Text.PlainText
         font.bold: true
-        text: qsTr("浮窗里的快捷键")
+        text: qsTr("应用里的快捷键")
     }
     Card {
         spacing: Kirigami.Units.smallSpacing

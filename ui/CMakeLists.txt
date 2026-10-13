@@ -6,9 +6,14 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS DBus Gui Network Quick QuickControls2 Test Widgets)
 find_package(LayerShellQt REQUIRED)
+find_package(KF6ColorScheme REQUIRED)
+find_package(KF6Config REQUIRED)
 find_package(KF6KIO REQUIRED)
 find_package(KF6WindowSystem REQUIRED)
 qt_standard_project_setup(REQUIRES 6.8)
+
+# The one theme object the QML reads for Endex's own shapes.
+set_source_files_properties(qml/Look.qml PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
 
 qt_add_executable(endex-ui src/main.cpp)
 qt_add_qml_module(endex-ui
@@ -17,8 +22,10 @@ qt_add_qml_module(endex-ui
     # Dynamic build: QML imports load at run time, nothing to link statically.
     NO_IMPORT_SCAN
     SOURCES
+        src/appearance.cpp src/appearance.h
         src/daemon.cpp src/daemon.h
         src/evalrun.cpp src/evalrun.h
+        src/look.cpp src/look.h
         src/navigation.cpp src/navigation.h
         src/popup.cpp src/popup.h
         src/results.cpp src/results.h
@@ -27,6 +34,7 @@ qt_add_qml_module(endex-ui
         src/uidebug.cpp src/uidebug.h
     QML_FILES
         qml/Main.qml
+        qml/Look.qml
         qml/ResultList.qml
         qml/DocRow.qml
         qml/ImageCell.qml
@@ -55,11 +63,14 @@ qt_add_qml_module(endex-ui
         qml/settings/PageShortcut.qml
         qml/settings/PageResource.qml
         qml/settings/PageEval.qml
+        qml/settings/PageAppearance.qml
+        qml/settings/LookPreview.qml
+        qml/settings/Notice.qml
 )
 target_include_directories(endex-ui PRIVATE src)
 target_link_libraries(endex-ui PRIVATE
     Qt6::DBus Qt6::Gui Qt6::Network Qt6::Quick Qt6::QuickControls2 Qt6::Widgets
-    LayerShellQt::Interface KF6::KIOGui KF6::WindowSystem
+    LayerShellQt::Interface KF6::ColorScheme KF6::ConfigCore KF6::KIOGui KF6::WindowSystem
 )
 
 enable_testing()
@@ -67,3 +78,7 @@ qt_add_executable(navigation_test tests/navigation_test.cpp src/navigation.cpp)
 target_include_directories(navigation_test PRIVATE src)
 target_link_libraries(navigation_test PRIVATE Qt6::Test)
 add_test(NAME navigation COMMAND navigation_test)
+qt_add_executable(look_test tests/look_test.cpp src/look.cpp)
+target_include_directories(look_test PRIVATE src)
+target_link_libraries(look_test PRIVATE Qt6::Gui Qt6::Test)
+add_test(NAME look COMMAND look_test)

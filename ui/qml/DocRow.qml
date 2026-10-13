@@ -27,7 +27,7 @@ Rectangle {
     signal doubleClicked()
     signal rightClicked()
 
-    implicitHeight: layout.implicitHeight + Kirigami.Units.largeSpacing * 2
+    implicitHeight: layout.implicitHeight + Look.largeSpacing * 2
     color: selected ? Qt.alpha(Kirigami.Theme.highlightColor, 0.2)
         : hover.hovered ? Qt.alpha(Kirigami.Theme.highlightColor, 0.07) : "transparent"
 
@@ -58,10 +58,10 @@ Rectangle {
         id: layout
 
         anchors.fill: parent
-        anchors.margins: Kirigami.Units.largeSpacing
-        anchors.leftMargin: Kirigami.Units.largeSpacing * 1.5
+        anchors.margins: Look.largeSpacing
+        anchors.leftMargin: Look.largeSpacing * 1.5
         columns: 2
-        columnSpacing: Kirigami.Units.largeSpacing
+        columnSpacing: Look.largeSpacing
         rowSpacing: 2
 
         Kirigami.Icon {
@@ -75,7 +75,7 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: Kirigami.Units.largeSpacing
+            spacing: Look.largeSpacing
 
             QQC2.Label {
                 textFormat: Text.PlainText
@@ -93,7 +93,7 @@ Rectangle {
             QQC2.Label {
                 textFormat: Text.PlainText
                 text: row.when
-                font: Kirigami.Theme.smallFont
+                font: Look.smallFont
                 color: Kirigami.Theme.disabledTextColor
             }
         }
@@ -113,13 +113,13 @@ Rectangle {
 
         RowLayout {
             Layout.fillWidth: true
-            spacing: Kirigami.Units.largeSpacing
+            spacing: Look.largeSpacing
 
             QQC2.Label {
                 textFormat: Text.PlainText
                 Layout.maximumWidth: row.width * 0.5
                 text: row.dir + "/" + row.name
-                font: Kirigami.Theme.smallFont
+                font: Look.smallFont
                 color: Kirigami.Theme.disabledTextColor
                 elide: Text.ElideMiddle
             }
@@ -127,7 +127,7 @@ Rectangle {
                 textFormat: Text.PlainText
                 Layout.fillWidth: true
                 text: row.location ? "§ " + row.location : ""
-                font: Kirigami.Theme.smallFont
+                font: Look.smallFont
                 color: Kirigami.Theme.disabledTextColor
                 elide: Text.ElideRight
             }

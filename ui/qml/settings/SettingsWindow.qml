@@ -7,7 +7,7 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import Endex
 
-// The settings window: eight pages, edits applied to config.toml (via endexd) or reverted as
+// The settings window: nine pages, edits applied to config.toml (via endexd) or reverted as
 // a whole.
 Kirigami.ApplicationWindow {
     id: window
@@ -28,14 +28,15 @@ Kirigami.ApplicationWindow {
     property string failure
 
     readonly property var pages: [
-        { id: "dirs", label: qsTr("索引目录"), icon: "folder", sub: qsTr("选择要建立索引的文件夹。图片和文档这两个常见目录默认不索引，由你决定。") },
-        { id: "exclude", label: qsTr("排除规则"), icon: "security-high", sub: qsTr("决定哪些文件不进索引。扫描和实时监听都遵守这些规则。") },
-        { id: "watch", label: qsTr("增量与监听"), icon: "view-refresh", sub: qsTr("增量扫描和实时监听互相独立，可以分别开关。") },
+        { id: "dirs", label: qsTr("索引目录"), icon: "folder", sub: qsTr("配置要建立索引的文件夹") },
+        { id: "exclude", label: qsTr("排除规则"), icon: "security-high", sub: qsTr("选择不需要被索引的目录") },
+        { id: "watch", label: qsTr("增量与监听"), icon: "view-refresh", sub: qsTr("控制增量与监听行为") },
         { id: "model", label: qsTr("模型与设备"), icon: "computer", sub: qsTr("嵌入模型、各场景使用的设备，以及截图 OCR。") },
         { id: "status", label: qsTr("索引状态"), icon: "server-database", sub: qsTr("索引的进度、数量，以及处理失败的文件。") },
-        { id: "shortcut", label: qsTr("快捷键指引"), icon: "input-keyboard", sub: qsTr("Wayland 下由 KDE 绑定全局快捷键，Endex 只提供命令 endex toggle。") },
-        { id: "resource", label: qsTr("资源档位"), icon: "battery-good", sub: qsTr("控制索引占用多少电量、处理器和显存。") },
+        { id: "shortcut", label: qsTr("快捷键指引"), icon: "input-keyboard", sub: qsTr("更改 Endex 的快捷键行为") },
+        { id: "resource", label: qsTr("性能"), icon: "battery-good", sub: qsTr("控制索引占用电量、处理器和显存。") },
         { id: "eval", label: qsTr("评测与日志"), icon: "office-chart-line", sub: qsTr("用固定查询集衡量检索质量，并决定是否记录使用日志。") },
+        { id: "appearance", label: qsTr("外观"), icon: "preferences-desktop-color", sub: qsTr("改 Endex 的样子：颜色、字体、间距、圆角、浮窗大小和半透明。预览跟着草稿走，点「应用」才写入 config.toml。设置窗口里的控件外形仍由 Plasma 决定。") },
     ]
     readonly property var current: pages.find(p => p.id === page) ?? pages[0]
     readonly property var status: daemon.status
@@ -65,6 +66,8 @@ Kirigami.ApplicationWindow {
             return "resource"
         if (key.startsWith("log."))
             return "eval"
+        if (key.startsWith("appearance."))
+            return "appearance"
         return ""
     }
 
@@ -111,6 +114,10 @@ Kirigami.ApplicationWindow {
             + ` restarting=${daemon.restarting} restartFailed=${!!daemon.restartError}`
             + ` unavailable=${(status.sources ?? []).filter(s => !s.exists).length} usageLog=${settings.usageLog.length}`
             + ` eval=${evalRun.running ? "running" : evalRun.error ? "error" : (evalRun.results.sets ?? []).length + " sets"}`
+            + ` bg=${Kirigami.Theme.backgroundColor} text=${Kirigami.Theme.textColor} font=${Kirigami.Theme.defaultFont.family}/${Kirigami.Theme.defaultFont.pointSize}`
+            + ` small=${Look.smallFont.family}/${Look.smallFont.pointSize} blur=${Appearance.blurAvailable}`
+            + ` theme=${Appearance.themeKeys.join(",")} themeError=${Appearance.themeError}`
+            + (pageLoader.item?.debugState ? " " + pageLoader.item.debugState() : "")
     }
 
     title: qsTr("Endex 设置")
@@ -244,8 +251,8 @@ Kirigami.ApplicationWindow {
 
                 ColumnLayout {
                     Layout.fillWidth: true
-                    Layout.margins: Kirigami.Units.largeSpacing * 2
-                    Layout.bottomMargin: Kirigami.Units.largeSpacing
+                    Layout.margins: Look.largeSpacing * 2
+                    Layout.bottomMargin: Look.largeSpacing
                     spacing: Kirigami.Units.smallSpacing
 
                     Kirigami.Heading {
@@ -260,8 +267,8 @@ Kirigami.ApplicationWindow {
 
                 Notices {
                     Layout.fillWidth: true
-                    Layout.leftMargin: Kirigami.Units.largeSpacing * 2
-                    Layout.rightMargin: Kirigami.Units.largeSpacing * 2
+                    Layout.leftMargin: Look.largeSpacing * 2
+                    Layout.rightMargin: Look.largeSpacing * 2
                     daemon: window.daemon
                     settings: window.settings
                     page: window.page
@@ -275,15 +282,18 @@ Kirigami.ApplicationWindow {
                 QQC2.ScrollView {
                     id: scroll
 
+                    objectName: "pageScroll"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     contentWidth: availableWidth
 
                     Loader {
-                        x: Kirigami.Units.largeSpacing * 2
-                        y: Kirigami.Units.largeSpacing
-                        width: scroll.availableWidth - Kirigami.Units.largeSpacing * 4
-                        height: item ? item.implicitHeight + Kirigami.Units.largeSpacing * 2 : 0
+                        id: pageLoader
+
+                        x: Look.largeSpacing * 2
+                        y: Look.largeSpacing
+                        width: scroll.availableWidth - Look.largeSpacing * 4
+                        height: item ? item.implicitHeight + Look.largeSpacing * 2 : 0
                         // Pages that edit settings wait for them, and are read-only when the
                         // daemon is.
                         enabled: window.writable || ["status", "shortcut", "eval"].includes(window.page)
@@ -305,6 +315,8 @@ Kirigami.ApplicationWindow {
                                 return resourcePage
                             case "eval":
                                 return evalPage
+                            case "appearance":
+                                return appearancePage
                             default:
                                 return dirsPage
                             }
@@ -446,6 +458,17 @@ Kirigami.ApplicationWindow {
         PageResource {
             daemon: window.daemon
             settings: window.settings
+        }
+    }
+    Component {
+        id: appearancePage
+
+        PageAppearance {
+            settings: window.settings
+            onCopy: text => {
+                window.popup.copy(text)
+                window.showPassiveNotification(qsTr("已复制 theme.toml 示例"))
+            }
         }
     }
     Component {

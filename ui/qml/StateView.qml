@@ -32,7 +32,7 @@ Item {
         [["Ctrl+1", "2", "3"], qsTr("切换 混合 / 向量 / 关键词")],
         [["↵", "Ctrl+↵"], qsTr("打开 / 在 Dolphin 中显示")],
         [["Ctrl+C", "Ctrl+⇧+C"], qsTr("复制路径 / 复制片段")],
-        [["Esc"], qsTr("关闭浮窗（再按一次快捷键也可以）")],
+        [["Esc"], qsTr("关闭浮窗")],
     ]
 
     readonly property var content: {
@@ -41,13 +41,13 @@ Item {
             return {
                 icon: "search",
                 title: qsTr("搜索文档和图片"),
-                text: qsTr("截图里的文字也能搜到；用一句话描述画面，向量模式会按语义找图片。"),
+                text: qsTr("尝试用自然语言来获取你想要的一切"),
             }
         case "none":
             return {
                 icon: "edit-find",
                 title: qsTr("没有找到「%1」").arg(query),
-                text: mode === "keyword" ? qsTr("关键词模式只匹配文字，不识别图片内容。") : qsTr("换个说法试试。"),
+                text: mode === "keyword" ? qsTr("关键词模式只匹配文字，不识别图片内容。") : qsTr("换个说法试试"),
             }
         case "failed":
             return {
@@ -60,7 +60,7 @@ Item {
             return {
                 icon: "system-run",
                 title: qsTr("Endex 守护进程没有运行"),
-                text: qsTr("浮窗连不上 D-Bus 服务 org.endex.Daemon1，现在没法搜索。"),
+                text: qsTr("无法连接 D-Bus 服务 org.endex.Daemon1"),
                 error: daemon.error,
                 command: "systemctl --user start endexd",
             }
@@ -68,7 +68,7 @@ Item {
             return {
                 icon: "folder-new",
                 title: qsTr("还没有要索引的目录"),
-                text: qsTr("Endex 不会自动扫描「图片」和「文档」，先选好要索引的目录。"),
+                text: qsTr("请添加需要索引的目录"),
             }
         case "empty":
             return {
@@ -79,8 +79,8 @@ Item {
         case "broken":
             return {
                 icon: "data-error",
-                title: qsTr("索引暂时不能用"),
-                text: qsTr("如果换过嵌入模型，需要在设置的「索引状态」里重建索引。"),
+                title: qsTr("索引暂时不可用"),
+                text: qsTr("更换嵌入模型后，需要在设置的「索引状态」里重建索引。"),
                 error: daemon.error,
             }
         case "rebuilding":
@@ -101,7 +101,7 @@ Item {
     ColumnLayout {
         anchors.centerIn: parent
         width: Math.min(parent.width - Kirigami.Units.gridUnit * 4, Kirigami.Units.gridUnit * 34)
-        spacing: Kirigami.Units.largeSpacing
+        spacing: Look.largeSpacing
 
         Kirigami.Icon {
             Layout.alignment: Qt.AlignHCenter
@@ -145,7 +145,7 @@ Item {
             visible: !!stateView.content.error
             text: stateView.content.error ?? ""
             font.family: "monospace"
-            font.pointSize: Kirigami.Theme.smallFont.pointSize
+            font.pointSize: Look.smallFont.pointSize
             color: Kirigami.Theme.negativeTextColor
             wrapMode: Text.Wrap
             horizontalAlignment: Text.AlignHCenter
@@ -153,7 +153,7 @@ Item {
 
         RowLayout {
             Layout.alignment: Qt.AlignHCenter
-            spacing: Kirigami.Units.largeSpacing
+            spacing: Look.largeSpacing
 
             QQC2.Button {
                 visible: stateView.view === "down"
@@ -203,9 +203,9 @@ Item {
 
         ColumnLayout {
             Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: Kirigami.Units.largeSpacing
+            Layout.topMargin: Look.largeSpacing
             visible: stateView.view === "first"
-            spacing: Kirigami.Units.smallSpacing
+            spacing: Look.smallSpacing
 
             Repeater {
                 model: [
@@ -220,7 +220,7 @@ Item {
                     required property string modelData
                     required property int index
 
-                    spacing: Kirigami.Units.largeSpacing
+                    spacing: Look.largeSpacing
 
                     KeyCap {
                         text: step.index + 1
@@ -236,7 +236,7 @@ Item {
 
         RowLayout {
             Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: Kirigami.Units.largeSpacing
+            Layout.topMargin: Look.largeSpacing
             visible: stateView.view === "tips"
             spacing: Kirigami.Units.gridUnit * 2
 
@@ -269,7 +269,7 @@ Item {
 
                         // Queries are user text: never rich text.
                         contentItem: RowLayout {
-                            spacing: Kirigami.Units.smallSpacing
+                            spacing: Look.smallSpacing
 
                             Kirigami.Icon {
                                 source: "chronometer"
@@ -291,8 +291,8 @@ Item {
             GridLayout {
                 Layout.alignment: Qt.AlignTop
                 columns: 2
-                columnSpacing: Kirigami.Units.largeSpacing * 2
-                rowSpacing: Kirigami.Units.smallSpacing
+                columnSpacing: Look.largeSpacing * 2
+                rowSpacing: Look.smallSpacing
 
                 Repeater {
                     model: stateView.tips
@@ -338,12 +338,12 @@ Item {
         QQC2.Label {
             textFormat: Text.PlainText
             Layout.alignment: Qt.AlignHCenter
-            Layout.topMargin: Kirigami.Units.largeSpacing
+            Layout.topMargin: Look.largeSpacing
             visible: stateView.view === "tips" && stateView.daemon.state === Daemon.Ready
             text: qsTr("已索引 %1 个文件：文档 %2 · 图片 %3")
                 .arg((stateView.daemon.status.doc_files ?? 0) + (stateView.daemon.status.image_files ?? 0))
                 .arg(stateView.daemon.status.doc_files ?? 0).arg(stateView.daemon.status.image_files ?? 0)
-            font: Kirigami.Theme.smallFont
+            font: Look.smallFont
             color: Kirigami.Theme.disabledTextColor
         }
     }

@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
+import Endex
 
 // A shell command in monospace, with a button that copies it.
 Rectangle {
@@ -11,9 +12,9 @@ Rectangle {
 
     signal copy(string text)
 
-    implicitWidth: row.implicitWidth + Kirigami.Units.largeSpacing * 2
-    implicitHeight: row.implicitHeight + Kirigami.Units.largeSpacing * 2
-    radius: Kirigami.Units.cornerRadius
+    implicitWidth: row.implicitWidth + Look.largeSpacing * 2
+    implicitHeight: row.implicitHeight + Look.largeSpacing * 2
+    radius: Look.radius
     color: Kirigami.Theme.alternateBackgroundColor
     border.color: Kirigami.ColorUtils.linearInterpolation(Kirigami.Theme.backgroundColor, Kirigami.Theme.textColor, 0.2)
 
@@ -21,7 +22,7 @@ Rectangle {
         id: row
 
         anchors.fill: parent
-        anchors.margins: Kirigami.Units.largeSpacing
+        anchors.margins: Look.largeSpacing
 
         QQC2.Label {
             textFormat: Text.PlainText

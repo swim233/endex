@@ -24,8 +24,8 @@ Rectangle {
     signal doubleClicked()
     signal rightClicked()
 
-    implicitHeight: column.implicitHeight + Kirigami.Units.smallSpacing * 2
-    radius: Kirigami.Units.cornerRadius
+    implicitHeight: column.implicitHeight + Look.smallSpacing * 2
+    radius: Look.radius
     color: selected ? Qt.alpha(Kirigami.Theme.highlightColor, 0.2)
         : hover.hovered ? Qt.alpha(Kirigami.Theme.highlightColor, 0.07) : "transparent"
     border.width: selected ? 2 : 0
@@ -49,13 +49,13 @@ Rectangle {
         id: column
 
         anchors.fill: parent
-        anchors.margins: Kirigami.Units.smallSpacing
+        anchors.margins: Look.smallSpacing
         spacing: 2
 
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: Math.round(width * 0.625)
-            radius: Kirigami.Units.cornerRadius
+            radius: Look.radius
             color: Kirigami.Theme.alternateBackgroundColor
             clip: true
 
@@ -82,11 +82,11 @@ Rectangle {
             Rectangle {
                 anchors.top: parent.top
                 anchors.right: parent.right
-                anchors.margins: Kirigami.Units.smallSpacing
-                width: relevance.implicitWidth + Kirigami.Units.smallSpacing * 2
+                anchors.margins: Look.smallSpacing
+                width: relevance.implicitWidth + Look.smallSpacing * 2
                 height: relevance.implicitHeight + 2
                 visible: relevance.implicitWidth > 0
-                radius: Kirigami.Units.cornerRadius
+                radius: Look.radius
                 color: Qt.alpha(Kirigami.Theme.backgroundColor, 0.85)
 
                 Relevance {
@@ -105,7 +105,7 @@ Rectangle {
             textFormat: Text.PlainText
             Layout.fillWidth: true
             text: cell.name
-            font: Kirigami.Theme.smallFont
+            font: Look.smallFont
             elide: Text.ElideMiddle
         }
 
@@ -115,7 +115,7 @@ Rectangle {
             text: cell.ocr ? cell.results.markup(cell.snippet, cell.spans, Kirigami.ColorUtils.tintWithAlpha(Kirigami.Theme.backgroundColor, Kirigami.Theme.neutralTextColor, 0.35), Kirigami.Theme.textColor)
                            : qsTr("语义匹配")
             textFormat: cell.ocr ? Text.RichText : Text.PlainText
-            font: Kirigami.Theme.smallFont
+            font: Look.smallFont
             color: cell.ocr ? Kirigami.Theme.textColor : Kirigami.Theme.disabledTextColor
             wrapMode: Text.NoWrap
             clip: true

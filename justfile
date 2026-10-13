@@ -85,10 +85,12 @@ ui:
     cmake --build target/ui
     ctest --test-dir target/ui --output-on-failure
 
+# The private bus can activate nothing (tests/private-bus.conf): the installed endexd never starts.
 # D-Bus integration test: endexd on the smoke-fixture index, on a private session bus.
 dbus-test:
     test -d "{{fixtures}}/db/index" || just smoke
-    dbus-run-session -- env ENDEX_PRIVATE_BUS=1 cargo test -p endexd --test dbus -- --ignored --test-threads=1
+    dbus-run-session --config-file="{{justfile_directory()}}/tests/private-bus.conf" -- \
+        env ENDEX_PRIVATE_BUS=1 cargo test -p endexd --test dbus -- --ignored --test-threads=1
 
 # Install for this user only: binaries to ~/.local/bin, D-Bus services, the endexd user unit and
 # the settings window's app menu entry.

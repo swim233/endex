@@ -39,7 +39,7 @@ Kirigami.FormLayout {
         onAccepted: page.settings.set("embedding.model", page.settings.configPath(selectedFile))
     }
 
-    Kirigami.InlineMessage {
+    Notice {
         Kirigami.FormData.isSection: true
         Layout.fillWidth: true
         visible: page.identityEdited
@@ -109,7 +109,7 @@ Kirigami.FormLayout {
             options: page.devices
         }
         Hint {
-            text: qsTr("每次按键都要嵌入查询词。CPU 单次约 27 ms，不必唤醒 GPU。")
+            text: qsTr("建议使用 CPU 设备，降低性能占用")
         }
     }
     ColumnLayout {
@@ -123,7 +123,7 @@ Kirigami.FormLayout {
             options: page.devices
         }
         Hint {
-            text: qsTr("首次索引、重建或一次改了很多文件时用。GPU：文本片段约 27 ms、图片约 143 ms；CPU：片段约 147 ms、图片约 718 ms。GPU 首次载入约 4 s。")
+            text: qsTr("使用 GPU 设备以加速索引")
         }
     }
     ColumnLayout {
@@ -137,7 +137,7 @@ Kirigami.FormLayout {
             options: page.devices
         }
         Hint {
-            text: qsTr("只改了几个文件时用 CPU，免得为此载入 GPU。")
+            text: qsTr("建议使用 CPU 设备，降低性能占用")
         }
     }
     QQC2.Label {
@@ -180,8 +180,8 @@ Kirigami.FormLayout {
         Layout.fillWidth: true
         settings: page.settings
         key: "ocr.enabled"
-        text: qsTr("识别截图里的文字（PP-OCRv6）")
-        hint: qsTr("开启后截图里的文字可以被关键词检索；关闭则只靠图像向量。更改后要重建索引。")
+        text: qsTr("启用 OCR（PP-OCRv6）")
+        hint: qsTr("开启后将允许对图片进行关键词搜索，更改此项设置需要重建索引")
     }
 
     Kirigami.Separator {

@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
+import Endex
 
 // Explanatory small print under a setting.
 QQC2.Label {
@@ -10,6 +11,6 @@ QQC2.Label {
     Layout.maximumWidth: Kirigami.Units.gridUnit * 30
     textFormat: Text.PlainText
     wrapMode: Text.WrapAtWordBoundaryOrAnywhere
-    font: Kirigami.Theme.smallFont
+    font: Look.smallFont
     color: Kirigami.Theme.disabledTextColor
 }

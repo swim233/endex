@@ -112,6 +112,7 @@ enum SettingsPage {
     Shortcut,
     Resource,
     Eval,
+    Appearance,
 }
 
 #[tokio::main]

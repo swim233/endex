@@ -3,7 +3,9 @@
 Local search over documents and images (including text inside screenshots) for one
 Linux desktop. One query, Chinese or English. M1: Rust core + CLI. M2: a search daemon
 (`endexd`, D-Bus) and a popup (`endex-ui`) for KDE Plasma 6 on Wayland. M3: endexd keeps the
-chosen folders indexed by itself, and a settings window replaces editing TOML.
+chosen folders indexed by itself, and a settings window replaces editing TOML. After M3: the
+「外观」 page (presets, colours, font, spacing, corners, popup size, translucency and blur, an
+optional theme.toml).
 
 ## Setup
 
@@ -62,8 +64,8 @@ With an empty query the popup lists the recent searches from the usage log (↑�
 runs one again), the key tips and the indexed counts. With no folders configured it shows a short
 guide whose button opens the settings on 「索引目录」 with a welcome. A banner above the results
 shows a first build, a rebuild or a large batch in progress (x / y files, ETA, 「搜索结果可能不完整」,
-and with many images on the light or mid profile a hint that 「重」 is faster), indexing paused on
-battery (「本次继续」, 「资源档位」), paused by the user or a rebuild waiting for that pause (「继续」 /
+and with many images on the light or mid profile the note 「图片较多，索引耗时较长」), indexing paused
+on battery (「本次继续」, 「性能」), paused by the user or a rebuild waiting for that pause (「继续」 /
 「本次继续」), an indexing error (the reason and 「继续」; there is no automatic retry), and a model
 setting that needs a rebuild. The status line shows the index state (索引就绪 · counts, 索引中 x / y
 · GPU 批量, 索引已暂停 · 电池供电, 尚未配置索引目录, …) and, when there is one, a broken config file
@@ -77,7 +79,8 @@ previous query, a cleared field or a gear click log nothing; nothing is logged p
 `endex settings [page]`, the popup's gear or Ctrl+, and the app-menu entry open it (one window per
 session; opening it again brings it to the front and switches the page). Pages: `dirs`
 (索引目录), `exclude` (排除规则), `watch` (增量与监听), `model` (模型与设备), `status` (索引状态),
-`shortcut` (快捷键指引), `resource` (资源档位), `eval` (评测与日志). It follows the Plasma theme.
+`shortcut` (快捷键指引), `resource` (性能), `eval` (评测与日志), `appearance` (外观). It follows the
+Plasma theme unless 「外观」 says otherwise.
 
 - **Saving:** edits stay in the window until 「应用」 (`ApplySettings`, which writes `config.toml`
   keeping its comments; endexd reloads it) or 「还原」. The footer counts the changed settings and
@@ -102,10 +105,12 @@ session; opening it again brings it to the front and switches the page). Pages: 
   (or 「本次继续」), and which unavailable folders are re-read only when they return.
 - **快捷键指引:** the manual steps above with a copy button for `<bindir>/endex toggle`, and the
   popup's keys. Endex never writes KDE shortcut settings.
-- **资源档位:** pause on battery (and the current power state), low priority, the light / mid /
+- **性能:** pause on battery (and the current power state), low priority, the light / mid /
   heavy profile with its thread counts, GPU release minutes.
 - **评测与日志:** the last `endex eval --sets` results (R@10 / MRR per set and mode) and 「运行评测」,
   which runs it in the background; the usage-log switch, its last entries and 「清除日志…」.
+- **外观:** see "Appearance" below. A small preview follows the draft (colours, font, shape and
+  translucency); 「应用」 writes `[appearance]` like any other page.
 
 Notices on every page: endexd unreachable (with 「启动」), read-only daemon, a broken
 `config.toml` (the error and its path; endexd keeps the last good settings), and a change that
@@ -114,6 +119,82 @@ needs a restart (`data_dir`, `embedding.library`, low priority turned off). That
 `ENDEX_SYSTEMCTL` overrides the program for tests), shows 「正在重启…」 and disappears once the
 restarted daemon no longer needs it; unapplied edits are kept. If the restart fails, the error
 is shown and the command stays there to copy. A read-only daemon gets only the command.
+
+## Appearance (外观)
+
+`[appearance]` in config.toml (written by the settings page, checked like every other table; a
+file without it keeps today's look):
+
+| Key | Values | Default |
+|---|---|---|
+| `preset` | `plasma` (跟随 Plasma), `proto` (原型样式), `glass` (毛玻璃), `custom` (自定义) | `plasma` |
+| `scheme` | `system` (Plasma's light or dark), `light`, `dark` | `system` |
+| `base` | palette under `custom`: `plasma` (Breeze-like) or `proto` (the mockup's) | `plasma` |
+| `accent` | `default` or `#rrggbb` | `default` |
+| `font`, `font_size` | `system`, `noto_sans`, `inter`, `noto_serif`, `jetbrains_mono`; 8–14 pt in halves | `system`, 10 |
+| `density`, `radius` | `comfortable` or `compact` (Endex's own spacing × 0.72); 0–16 px | `comfortable`, 5 |
+| `popup_size` | `default` (1100×640), `small` (940×620), `screen` (`screen_percent` 40–90 of the screen's width, in the default's proportions), `custom` (`popup_width` 480–1600 × `popup_height` 320–1000) | `default` |
+| `translucency`, `blur` | popup translucency 0–60 %; KWin blur behind it | 0, `false` |
+
+- **Presets** decide every style key except `scheme` and the popup-size numbers: `plasma` is the
+  look before 「外观」 (nothing is changed at all: Plasma's colours, font and sizes), `proto` the
+  mockup's palette with Noto Sans SC 10.5 pt and radius 8, `glass` Plasma's look with radius 10,
+  35 % translucency and blur. Changing a style key on the page turns the preset into `custom`,
+  starting from the values it showed.
+- **Colours.** `plasma` with `scheme = "system"` uses Plasma's colours; a forced light or dark, or
+  the `proto` palette, uses Endex's built-in palettes. A custom accent keeps text in it at 4.5:1
+  against the view colour, the text on it is dark or white, whichever reads better, and the page
+  warns when the accent is close to the window colour. The result becomes a KDE colour scheme for
+  the endex-ui process only (`$XDG_CACHE_HOME/endex-ui/scheme-*.colors`, applied as
+  KColorSchemeManager applies an app's own scheme): Kirigami and Plasma's controls follow it.
+  The settings window's title bar follows it with Breeze decorations (seen in the nested KWin);
+  decoration themes that bring their own colours may not. Nothing is written to KDE's
+  configuration.
+- **Font** is the application font of endex-ui (installed families only; a missing one falls back
+  to the system font and the page says so). The popup's search field is 1.35 × the size.
+- **Popup:** colours, font, size, density, radius (its outer corners are twice it), translucency
+  and blur. Its size is fitted to the screen it shows on, leaving 16 px at the sides and 60 px
+  above and below for panels; the page shows the size on the current screen and whether it was
+  reduced. Endex does not know where the panels are or how thick they are (Wayland does not tell
+  it), so on a short screen a panel thicker than 60 px, or panels at both edges, can still
+  overlap the popup.
+- **Settings window:** colours and font follow; Plasma's controls keep their shapes. Only Endex's
+  own cards and notices follow the radius, and its own margins the density.
+- **Blur** uses KWin's blur behind the popup (`KWindowEffects::enableBlurBehind` on the layer-shell
+  surface, shaped like the rounded panel). It needs KWin's Blur effect (or a replacement that
+  offers the same protocol); its strength is KWin's, the same for every window, so the page only
+  offers a button that opens System Settings › Desktop Effects. Whether the compositor offers blur
+  is checked read-only (`KWindowEffects::isEffectAvailable`) and shown on the page.
+- **Live:** an applied change takes effect at once in the settings window and at the popup's next
+  summon. The popup reads the settings again at every summon, so edits by hand are picked up
+  too; a new size or blur then applies while it shows, like the colours.
+
+`~/.config/endex/theme.toml` (`$XDG_CONFIG_HOME`) is optional and read by endex-ui only. Keys it
+sets override the page; saved changes apply at once. A file that does not load keeps the last good
+theme, and the page shows the error with its line. The page's 「主题文件」 section shows a sample
+for the current settings, with 「复制」.
+
+```toml
+[theme]
+base = "plasma"      # plasma | proto: the palette for colours not set below
+scheme = "dark"      # system | light | dark
+[colors]             # "#rrggbb" (or "#rgb")
+accent = "#3daee9"   # also: window view text muted line positive neutral negative
+[font]
+family = ""          # a font family; "" is the system font
+size_pt = 10.0       # 8–14
+[shape]
+radius = 5           # 0–16
+density = "compact"  # comfortable | compact
+[popup]
+width = 1100         # 480–1600; with height (320–1000) the popup size, still fitted to the screen
+opacity = 0.80       # 0.4–1
+blur = true
+```
+
+`line` is the popup's border. When the file sets `window`, `view` or `text`, the shades in
+between (alternate rows, buttons, headers) are mixed from them. Unknown tables or keys are
+errors, so that typos show, and the file must be a regular file of at most 1 MiB.
 
 ## Commands
 
@@ -127,7 +208,7 @@ endex status
 endex config [KEY]                            # resolved settings, e.g. `endex config data_dir`
 endex search "…" --daemon                     # ask the running daemon instead (its own index)
 endex toggle                                  # show or hide the popup
-endex settings [dirs|exclude|watch|model|status|shortcut|resource|eval]   # the settings window
+endex settings [dirs|exclude|…|eval|appearance]  # the settings window (pages above)
 endexd [--config F]                           # the daemon, in the foreground (normally systemd)
 endexd [--config F] --data-dir D              # serve the index in D read-only (as in M2)
 ```
@@ -197,7 +278,9 @@ crates/endexd       the daemon
 ui/                 endex-ui (C++/QML): the popup (layer shell, daemon client, paged results,
                     navigation) and the settings window (settings.cpp: GetSettings/ApplySettings
                     draft; evalrun.cpp: `endex eval --sets`; settingswindow.cpp: one window,
-                    activation; qml/settings/: the window and its eight pages)
+                    activation; qml/settings/: the window and its nine pages); the look
+                    (look.cpp: presets, palettes, contrast, popup size, theme.toml, the colour
+                    scheme; appearance.cpp: applies it; qml/Look.qml: the shapes QML reads)
 dist/               systemd user unit, D-Bus service files and the settings' .desktop entry
                     (templates for `just install`)
 scripts/gen_fixtures.py   synthetic smoke-test data
@@ -369,7 +452,13 @@ entry): `index.sources` (aa{sv}: `path`, `kind`), `index.declined` (as),
 `embedding.prefix_style` (s), `ocr.enabled` (b), `devices.query`, `devices.bulk`,
 `devices.incremental` (s: `cpu` or `gpu`), `resources.pause_on_battery`,
 `resources.low_priority` (b), `resources.profile` (s), `resources.threads.light|mid|heavy`
-(u, 1–64), `resources.gpu_idle_release_min` (u, 0–1440), `log.usage` (b). Read-only:
+(u, 1–64), `resources.gpu_idle_release_min` (u, 0–1440), `log.usage` (b), and
+`appearance.preset`, `appearance.base`, `appearance.scheme`, `appearance.accent` (s),
+`appearance.font` (s), `appearance.font_size` (d, 8–14 in halves), `appearance.density` (s),
+`appearance.radius` (u, 0–16), `appearance.popup_size` (s), `appearance.screen_percent` (u,
+40–90), `appearance.popup_width` (u, 480–1600), `appearance.popup_height` (u, 320–1000),
+`appearance.translucency` (u, 0–60), `appearance.blur` (b) (values above; a change of these
+alone leaves the indexer alone). Read-only:
 `index.suggested` (as: `~/Documents` and `~/Pictures` unless already a source or declined),
 `exclude.builtin_list`, `exclude.sensitive_list`, `config_path`.
 
@@ -446,7 +535,7 @@ a fake power state and adds `org.endex.DaemonDebug1.SetOnBattery(b)` on the same
   SQLite (WAL mode) keeps `catalog.sqlite-wal` and `-shm` next to the catalog. A second endexd
   exits instead of taking over the bus name or the index; the unit does not restart on startup
   errors (exit status 2: config, model, index locked, name taken).
-- **Popup.** A LayerShellQt surface on the *top* layer (on *overlay*, KWin stacks the fcitx5
-  candidate window below it). Each show maps it with exclusive keyboard interactivity, so focus
-  does not depend on an activation token; once focused it drops to on-demand, so clicking another
-  window takes focus away and the popup hides.
+- **Popup.** Its size comes from 「外观」 (see there). A LayerShellQt surface on the *top* layer (on
+  *overlay*, KWin stacks the fcitx5 candidate window below it). Each show maps it with exclusive
+  keyboard interactivity, so focus does not depend on an activation token; once focused it drops
+  to on-demand, so clicking another window takes focus away and the popup hides.

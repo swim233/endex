@@ -51,16 +51,16 @@ ColumnLayout {
 
     spacing: Kirigami.Units.largeSpacing
 
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.welcome
         type: Kirigami.MessageType.Positive
-        text: qsTr("<b>欢迎使用 Endex</b>：先添加要索引的目录，点「应用」开始首次索引；之后按你绑定的快捷键（见「快捷键指引」）就能搜索。")
+        text: qsTr("<b>欢迎使用 Endex</b>：先添加要索引的目录，点「应用」开始首次索引；之后按你绑定的快捷键（见「快捷键指引」）即可体验搜索。")
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.writable
-        text: qsTr("点「应用」后立即开始索引；电池供电且开启了「暂停索引」时，会等接上电源。")
+        text: qsTr("索引将在设置应用后进行")
     }
 
     Card {
@@ -176,7 +176,7 @@ ColumnLayout {
                         elide: Text.ElideMiddle
                     }
                     Hint {
-                        text: qsTr("尚未决定。默认不索引，里面的内容不会被读取。")
+                        text: qsTr("尚未被索引")
                     }
                 }
                 QQC2.Button {
@@ -221,7 +221,7 @@ ColumnLayout {
                         elide: Text.ElideMiddle
                     }
                     Hint {
-                        text: qsTr("已选择不索引")
+                        text: qsTr("已排除索引")
                     }
                 }
                 QQC2.Button {

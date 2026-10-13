@@ -7,11 +7,15 @@
 #include <QScreen>
 #include <QUrl>
 
+#include <QPainterPath>
+
 #include <KIO/OpenFileManagerWindowJob>
 #include <KIO/OpenUrlJob>
 #include <KWaylandExtras>
+#include <KWindowEffects>
 #include <LayerShellQt/Window>
 
+#include "appearance.h"
 #include "evalrun.h"
 #include "settingswindow.h"
 
@@ -19,10 +23,11 @@ using namespace Qt::StringLiterals;
 
 static constexpr int TopMargin = 120;
 
-void Popup::attach(QQuickWindow *window, SettingsWindow *settings)
+void Popup::attach(QQuickWindow *window, SettingsWindow *settings, Appearance *appearance)
 {
     m_window = window;
     m_settings = settings;
+    m_appearance = appearance;
     m_layer = LayerShellQt::Window::get(window);
     m_layer->setScope(u"endex"_s);
     // Top, not overlay: KWin stacks the input method's candidate window below overlay surfaces.
@@ -41,6 +46,35 @@ void Popup::attach(QQuickWindow *window, SettingsWindow *settings)
             hide();
         }
     });
+    // The compositor puts it on the active screen, which may be another one; and the look can
+    // change while it shows (the settings read at a summon, theme.toml).
+    connect(window, &QWindow::screenChanged, this, [this] {
+        if (m_window->isVisible())
+            fit();
+    });
+    connect(appearance, &Appearance::changed, this, [this] {
+        if (m_window->isVisible())
+            fit();
+    });
+    fit();
+}
+
+void Popup::fit()
+{
+    const QSize size = m_appearance->popupSize(m_window->screen());
+    // Lower screens get a smaller gap above the popup.
+    const int room = m_window->screen()->geometry().height() - size.height();
+    const Fit next{size, qBound(0, room / 2, TopMargin), m_appearance->blurBehind(), m_appearance->popupRadius()};
+    // A shown popup is only touched when something changed.
+    if (m_window->isVisible() && next == m_fit)
+        return;
+    m_fit = next;
+    m_window->resize(size);
+    m_layer->setMargins({0, next.top, 0, 0});
+    // KWin blurs what is behind the rounded panel (its Blur effect, when it is on).
+    QPainterPath panel;
+    panel.addRoundedRect(QRectF(QPointF(0, 0), size), next.radius, next.radius);
+    KWindowEffects::enableBlurBehind(m_window, next.blur, QRegion(panel.toFillPolygon().toPolygon()));
 }
 
 void Popup::hide()
@@ -60,9 +94,8 @@ void Popup::Toggle()
 void Popup::Show(const QString &query)
 {
     if (!m_window->isVisible()) {
-        // Lower screens get a smaller gap above the popup.
-        const int room = m_window->screen()->geometry().height() - m_window->height();
-        m_layer->setMargins({0, qBound(0, room / 2, TopMargin), 0, 0});
+        // Applied looks take effect here: size, blur.
+        fit();
         m_layer->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityExclusive);
         m_window->show();
         m_window->requestActivate();

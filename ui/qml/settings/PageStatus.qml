@@ -74,13 +74,13 @@ ColumnLayout {
 
     spacing: Kirigami.Units.largeSpacing
 
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.daemon.state === Daemon.Down || page.daemon.state === Daemon.Starting
         type: Kirigami.MessageType.Error
-        text: qsTr("连不上守护进程，下面的数字可能不是最新的。")
+        text: qsTr("无法连接至守护进程，请检查守护进程状态")
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.noSources
         text: qsTr("还没有索引目录。先去「索引目录」添加。")
@@ -90,11 +90,11 @@ ColumnLayout {
             onTriggered: page.pageRequested("dirs")
         }
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.s.state === "error"
         type: Kirigami.MessageType.Error
-        text: qsTr("<b>索引出错，已停止</b>：%1<br>不会自动重试；排除问题后点「继续」。").arg(Markup.escape(page.s.reason))
+        text: qsTr("<b>索引出错，已停止</b>：%1<br>请排除问题后继续索引。").arg(Markup.escape(page.s.reason))
         actions: Kirigami.Action {
             objectName: "resumeAfterError"
             text: qsTr("继续")
@@ -102,13 +102,13 @@ ColumnLayout {
             onTriggered: page.daemon.control("Resume")
         }
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.s.state === "needs_rebuild"
         type: Kirigami.MessageType.Warning
         text: {
             const what = { model: qsTr("嵌入模型"), prefix_style: qsTr("前缀风格"), ocr: qsTr("OCR 设置") }[page.s.reason] ?? page.s.reason
-            return qsTr("%1改了：已有索引要重建才会生效，在那之前新文件不会进索引。").arg(what)
+            return qsTr("%1发生更改：需要重建索引").arg(what)
         }
         actions: Kirigami.Action {
             text: qsTr("重建索引…")
@@ -143,7 +143,7 @@ ColumnLayout {
             }
             QQC2.Label {
                 textFormat: Text.PlainText
-                font: Kirigami.Theme.smallFont
+                font: Look.smallFont
                 color: page.s.reason === "battery" ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.disabledTextColor
                 text: {
                     switch (page.s.state) {
@@ -199,7 +199,7 @@ ColumnLayout {
                         return page.s.reason === "battery" ? qsTr("重建会在接上电源后开始，或点「本次继续」。在那之前现有索引照常可搜。")
                             : qsTr("重建会在继续索引后开始。在那之前现有索引照常可搜。")
                     return (page.s.total > 0 ? qsTr("%1 / %2 个文件。").arg(page.number(page.s.done)).arg(page.number(page.s.total)) : "")
-                        + (page.s.reason === "battery" ? qsTr("接上电源后自动继续，或在「资源档位」里关闭暂停。") : qsTr("点「继续」接着索引。"))
+                        + (page.s.reason === "battery" ? qsTr("接上电源后自动继续，或在「性能」里关闭暂停。") : qsTr("点「继续」接着索引。"))
                 case "indexing":
                     return qsTr("%1 / %2 个文件 · %3%").arg(page.number(page.s.done)).arg(page.number(page.s.total)).arg(Math.floor(page.fraction * 100))
                         + (page.s.rebuilding ? qsTr(" · 重建期间搜索结果不完整") : "")
@@ -215,14 +215,13 @@ ColumnLayout {
         }
     }
 
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.s.bulk === true && (page.s.images ?? 0) >= 100 && page.settings.saved["resources.profile"] !== "heavy"
             && ["indexing", "scanning", "paused"].includes(page.s.state)
-        text: qsTr("队列里还有 %1 张图片。识别图片里的文字在「%2」档每张约 1–4 秒；首次建立索引时改用「重」档会快一些。")
-            .arg(page.number(page.s.images)).arg(page.settings.saved["resources.profile"] === "light" ? qsTr("轻") : qsTr("中"))
+        text: qsTr("队列剩余 %1 张图片").arg(page.number(page.s.images))
         actions: Kirigami.Action {
-            text: qsTr("资源档位")
+            text: qsTr("性能")
             icon.name: "go-next"
             onTriggered: page.pageRequested("resource")
         }
@@ -323,7 +322,7 @@ ColumnLayout {
                         textFormat: Text.PlainText
                         text: failedRow.modelData.path
                         font.family: "monospace"
-                        font.pointSize: Kirigami.Theme.smallFont.pointSize
+                        font.pointSize: Look.smallFont.pointSize
                         wrapMode: Text.WrapAnywhere
                     }
                     Hint {
@@ -362,19 +361,19 @@ ColumnLayout {
             onClicked: page.confirmRebuild = true
         }
         Hint {
-            text: qsTr("改了模型、前缀风格或 OCR 设置，或索引损坏时用。")
+            text: qsTr("立即重建所有索引")
         }
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.confirmRebuild
         type: Kirigami.MessageType.Warning
         text: {
-            let text = qsTr("重建会清空现有索引，再把全部文件重新读取和嵌入。重建期间仍然可以搜索，但只能搜到已经重新建好的部分。")
+            let text = qsTr("重建将清空现有索引，文件较多时耗时较长")
             if (page.status.on_battery && page.status.pause_on_battery && !page.status.battery_override)
-                text += "<br>" + qsTr("现在是电池供电：重建会等接上电源再开始，也可以在提示里点「本次继续」。")
+                text += "<br>" + qsTr("当前为电池供电：等待电源中，点击「本次继续」后将立即开始。")
             if (page.unavailable.length > 0)
-                text += "<br>" + qsTr("暂时不可用的目录（%1）现在读不到：重建后它们的文件要等目录回来才会重新进入索引。").arg(Markup.escape(page.unavailable.join("、")))
+                text += "<br>" + qsTr("暂时不可用的目录（%1）无法被读取：需要等待目录重新可用").arg(Markup.escape(page.unavailable.join("、")))
             return text
         }
         actions: [

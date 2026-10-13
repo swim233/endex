@@ -47,16 +47,16 @@ ColumnLayout {
 
         ColumnLayout {
             width: scroll.availableWidth
-            spacing: Kirigami.Units.largeSpacing
+            spacing: Look.largeSpacing
 
             Rectangle {
                 Layout.fillWidth: true
-                Layout.topMargin: Kirigami.Units.largeSpacing
-                Layout.leftMargin: Kirigami.Units.largeSpacing * 1.5
-                Layout.rightMargin: Kirigami.Units.largeSpacing * 1.5
+                Layout.topMargin: Look.largeSpacing
+                Layout.leftMargin: Look.largeSpacing * 1.5
+                Layout.rightMargin: Look.largeSpacing * 1.5
                 Layout.preferredHeight: Kirigami.Units.gridUnit * 11
                 visible: pane.isImage
-                radius: Kirigami.Units.cornerRadius
+                radius: Look.radius
                 color: Kirigami.Theme.alternateBackgroundColor
 
                 Image {
@@ -71,10 +71,10 @@ ColumnLayout {
 
             RowLayout {
                 Layout.fillWidth: true
-                Layout.topMargin: pane.isImage ? 0 : Kirigami.Units.largeSpacing * 1.5
-                Layout.leftMargin: Kirigami.Units.largeSpacing * 1.5
-                Layout.rightMargin: Kirigami.Units.largeSpacing * 1.5
-                spacing: Kirigami.Units.largeSpacing
+                Layout.topMargin: pane.isImage ? 0 : Look.largeSpacing * 1.5
+                Layout.leftMargin: Look.largeSpacing * 1.5
+                Layout.rightMargin: Look.largeSpacing * 1.5
+                spacing: Look.largeSpacing
 
                 Kirigami.Icon {
                     visible: !pane.isImage
@@ -100,7 +100,7 @@ ColumnLayout {
                         Layout.fillWidth: true
                         text: (pane.current.dir ?? "") + "/" + (pane.current.name ?? "")
                         font.family: "monospace"
-                        font.pointSize: Kirigami.Theme.smallFont.pointSize
+                        font.pointSize: Look.smallFont.pointSize
                         color: Kirigami.Theme.disabledTextColor
                         elide: Text.ElideMiddle
                     }
@@ -110,8 +110,8 @@ ColumnLayout {
             QQC2.Label {
                 textFormat: Text.PlainText
                 Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.largeSpacing * 1.5
-                Layout.rightMargin: Kirigami.Units.largeSpacing * 1.5
+                Layout.leftMargin: Look.largeSpacing * 1.5
+                Layout.rightMargin: Look.largeSpacing * 1.5
                 text: {
                     const c = pane.current
                     const parts = pane.isImage && c.width ? [`${c.width}×${c.height}`] : []
@@ -128,10 +128,10 @@ ColumnLayout {
 
             RowLayout {
                 Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.largeSpacing * 1.5
-                Layout.rightMargin: Kirigami.Units.largeSpacing
+                Layout.leftMargin: Look.largeSpacing * 1.5
+                Layout.rightMargin: Look.largeSpacing
                 visible: !pane.isImage
-                spacing: Kirigami.Units.smallSpacing
+                spacing: Look.smallSpacing
 
                 QQC2.Label {
                     textFormat: Text.PlainText
@@ -168,29 +168,29 @@ ColumnLayout {
             QQC2.Label {
                 textFormat: Text.PlainText
                 Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.largeSpacing * 1.5
-                Layout.rightMargin: Kirigami.Units.largeSpacing * 1.5
+                Layout.leftMargin: Look.largeSpacing * 1.5
+                Layout.rightMargin: Look.largeSpacing * 1.5
                 visible: pane.isImage
                 text: pane.current.ocr ? qsTr("OCR 文字（参与关键词检索）") : qsTr("没有识别到文字，只按画面内容（向量）检索")
-                font: Kirigami.Theme.smallFont
+                font: Look.smallFont
                 color: Kirigami.Theme.disabledTextColor
             }
 
             Rectangle {
                 Layout.fillWidth: true
-                Layout.leftMargin: Kirigami.Units.largeSpacing * 1.5
-                Layout.rightMargin: Kirigami.Units.largeSpacing * 1.5
-                Layout.bottomMargin: Kirigami.Units.largeSpacing
-                implicitHeight: chunkText.implicitHeight + Kirigami.Units.largeSpacing * 2
+                Layout.leftMargin: Look.largeSpacing * 1.5
+                Layout.rightMargin: Look.largeSpacing * 1.5
+                Layout.bottomMargin: Look.largeSpacing
+                implicitHeight: chunkText.implicitHeight + Look.largeSpacing * 2
                 visible: pane.loaded && pane.preview.text !== ""
-                radius: Kirigami.Units.cornerRadius
+                radius: Look.radius
                 color: Kirigami.Theme.alternateBackgroundColor
 
                 QQC2.Label {
                     id: chunkText
 
                     anchors.fill: parent
-                    anchors.margins: Kirigami.Units.largeSpacing
+                    anchors.margins: Look.largeSpacing
                     text: pane.loaded
                         ? `<div style="white-space:pre-wrap">${pane.results.markup(pane.preview.text, pane.preview.spans, Kirigami.ColorUtils.tintWithAlpha(Kirigami.Theme.backgroundColor, Kirigami.Theme.neutralTextColor, 0.35), Kirigami.Theme.textColor)}</div>`
                         : ""
@@ -207,10 +207,10 @@ ColumnLayout {
 
     GridLayout {
         Layout.fillWidth: true
-        Layout.margins: Kirigami.Units.largeSpacing
+        Layout.margins: Look.largeSpacing
         columns: 6
-        rowSpacing: Kirigami.Units.smallSpacing
-        columnSpacing: Kirigami.Units.smallSpacing
+        rowSpacing: Look.smallSpacing
+        columnSpacing: Look.smallSpacing
         enabled: pane.hasHit
 
         ActionButton {
@@ -268,8 +268,8 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.preferredWidth: 1
         // The desktop style sets no padding; the key cap would sit on the frame.
-        padding: Kirigami.Units.smallSpacing
-        horizontalPadding: Kirigami.Units.largeSpacing
+        padding: Look.smallSpacing
+        horizontalPadding: Look.largeSpacing
         focusPolicy: Qt.NoFocus
         onClicked: pane.act(command)
 
@@ -278,7 +278,7 @@ ColumnLayout {
             opacity: button.enabled ? 1 : 0.5
 
             RowLayout {
-                spacing: Kirigami.Units.smallSpacing
+                spacing: Look.smallSpacing
 
                 Kirigami.Icon {
                     implicitWidth: Kirigami.Units.iconSizes.small

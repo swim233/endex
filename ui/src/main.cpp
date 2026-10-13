@@ -13,6 +13,7 @@
 #include <QQuickStyle>
 #include <QQuickWindow>
 
+#include "appearance.h"
 #include "daemon.h"
 #include "evalrun.h"
 #include "popup.h"
@@ -86,6 +87,9 @@ int main(int argc, char *argv[])
     Results results;
     Daemon daemon(&results);
     Settings settings;
+    // The applied look: usually in before the first Toggle is delivered.
+    settings.load();
+    Appearance appearance(&settings);
     EvalRun evalRun;
     Popup popup;
     QQmlApplicationEngine engine;
@@ -108,7 +112,7 @@ int main(int argc, char *argv[])
                                       {u"settings"_s, QVariant::fromValue(&settings)},
                                       {u"evalRun"_s, QVariant::fromValue(&evalRun)},
                                   });
-    popup.attach(qobject_cast<QQuickWindow *>(root), &settingsWindow);
+    popup.attach(qobject_cast<QQuickWindow *>(root), &settingsWindow, &appearance);
 
     // The object goes first: D-Bus activation delivers the waiting Toggle as soon as the name
     // is ours.

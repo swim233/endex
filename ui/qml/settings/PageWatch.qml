@@ -19,11 +19,19 @@ ColumnLayout {
     // 0 both, 1 scan only, 2 watch only, 3 neither (the table's rows).
     readonly property int combination: scan && watch ? 0 : scan ? 1 : watch ? 2 : 3
     readonly property var rows: [
-        [qsTr("都开"), qsTr("启动时补齐离线期间的变化，运行中实时更新。推荐。")],
-        [qsTr("只开扫描"), qsTr("改动要等下一次扫描才能搜到；不占用 inotify watch。")],
-        [qsTr("只开监听"), qsTr("运行中实时更新，但守护进程停止期间的改动会漏掉。")],
-        [qsTr("都关"), qsTr("索引不再自动更新，只能手动「立即扫描」或「重建索引」。")],
+        [qsTr("开启实时监听与增量扫描"), qsTr("程序启动时重建离线期间的更改，运行中实时更新，会增大性能开销")],
+        [qsTr("仅开启增量扫描"), qsTr("仅在每次扫描时重建更改")],
+        [qsTr("仅开启实时监听"), qsTr("运行中实时更新，无法自动重建守护进程离线时的更改")],
+        [qsTr("关闭实时监听与增量扫描"), qsTr("索引不再自动更新，需要手动「立即扫描」或「重建索引」。")],
     ]
+
+    // The longest combination name sets the width of the names' column.
+    TextMetrics {
+        id: longestName
+
+        font.bold: true
+        text: page.rows.map(r => r[0]).reduce((a, b) => b.length > a.length ? b : a)
+    }
 
     function number(n) {
         return Number(n ?? 0).toLocaleString(Qt.locale(), "f", 0)
@@ -70,7 +78,7 @@ ColumnLayout {
                 settings: page.settings
                 key: "update.watch"
                 text: qsTr("实时监听（inotify）")
-                hint: qsTr("文件一变化就更新索引，通常几秒内生效。")
+                hint: qsTr("将在文件变化时实时更新索引")
             }
             ColumnLayout {
                 readonly property var status: page.daemon.status
@@ -97,7 +105,7 @@ ColumnLayout {
                 Hint {
                     visible: parent.status.watch === "error"
                     color: Kirigami.Theme.negativeTextColor
-                    text: qsTr("监听没能启动，改动要等扫描才能发现。")
+                    text: qsTr("监听启动失败")
                 }
             }
             Hint {
@@ -107,30 +115,30 @@ ColumnLayout {
         }
     }
 
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.combination === 3
         type: Kirigami.MessageType.Warning
-        text: qsTr("两项都关了：索引不会再自动更新。")
+        text: qsTr("索引不会再自动更新")
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.combination === 2
         type: Kirigami.MessageType.Warning
-        text: qsTr("只开监听时，守护进程没运行期间发生的改动会被漏掉。")
+        text: qsTr("可能遗漏部分文件改动")
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.combination === 1
         type: Kirigami.MessageType.Warning
         text: {
             switch (page.settings.draft["update.scan_interval"]) {
             case "hourly":
-                return qsTr("实时监听关了：改动要等下一次扫描（每小时一次）或守护进程重启才会被发现。")
+                return qsTr("将不再实时监听文件变化")
             case "daily":
-                return qsTr("实时监听关了：改动要等每天一次的扫描或守护进程重启才会被发现。")
+                return qsTr("将不再实时监听文件变化")
             default:
-                return qsTr("实时监听关了：改动只在守护进程启动时才会被发现。")
+                return qsTr("仅在守护进程启动时更新索引")
             }
         }
     }
@@ -150,7 +158,7 @@ ColumnLayout {
 
                 Layout.fillWidth: true
                 implicitHeight: comboLine.implicitHeight + Kirigami.Units.largeSpacing
-                radius: Kirigami.Units.cornerRadius
+                radius: Look.radius
                 color: current ? Kirigami.Theme.highlightColor : "transparent"
                 opacity: current ? 1 : 0.9
 
@@ -163,7 +171,7 @@ ColumnLayout {
                     spacing: Kirigami.Units.largeSpacing
 
                     QQC2.Label {
-                        Layout.preferredWidth: Kirigami.Units.gridUnit * 5
+                        Layout.preferredWidth: Math.ceil(longestName.width)
                         textFormat: Text.PlainText
                         text: comboRow.modelData[0]
                         font.bold: comboRow.current
@@ -180,7 +188,7 @@ ColumnLayout {
                         visible: comboRow.current
                         textFormat: Text.PlainText
                         text: qsTr("当前")
-                        font: Kirigami.Theme.smallFont
+                        font: Look.smallFont
                         color: Kirigami.Theme.highlightedTextColor
                     }
                 }
@@ -199,7 +207,7 @@ ColumnLayout {
             onClicked: page.daemon.control("Rescan")
         }
         Hint {
-            text: qsTr("马上对比所有目录和索引，补上漏掉的改动（不会重新嵌入没变的文件）。")
+            text: qsTr("立即对所有更改进行扫描，重建更改的索引")
         }
     }
 }

@@ -6,7 +6,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use endex_core::config::edit::{self, ConfigDoc, refresh_comments};
-use endex_core::config::{Config, Source, SourceKind, default_toml, enum_name, expand_home, tilde};
+use endex_core::config::{
+    AppearanceConfig, Config, Source, SourceKind, default_toml, enum_name, expand_home, tilde,
+};
 use endex_core::exclude::{BUILTIN, SENSITIVE, check_rule};
 use toml_edit::Value as Toml;
 use zbus::zvariant::{OwnedValue, Value};
@@ -18,13 +20,18 @@ pub type Errors = BTreeMap<String, String>;
 enum Type {
     Bool,
     Number(u32, u32),
+    /// A number in halves, such as a font size.
+    Halves(f64, f64),
     Choice(&'static [&'static str]),
+    /// `default` or `#rrggbb`.
+    Color,
     Strings,
     Path,
     Sources,
 }
 
 const DEVICES: &[&str] = &["cpu", "gpu"];
+const PALETTES: &[&str] = &["plasma", "proto"];
 
 const KEYS: &[(&str, Type)] = &[
     ("index.sources", Type::Sources),
@@ -61,6 +68,41 @@ const KEYS: &[(&str, Type)] = &[
     ("resources.threads.heavy", Type::Number(1, 64)),
     ("resources.gpu_idle_release_min", Type::Number(0, 1440)),
     ("log.usage", Type::Bool),
+    (
+        "appearance.preset",
+        Type::Choice(&["plasma", "proto", "glass", "custom"]),
+    ),
+    ("appearance.base", Type::Choice(PALETTES)),
+    (
+        "appearance.scheme",
+        Type::Choice(&["system", "light", "dark"]),
+    ),
+    ("appearance.accent", Type::Color),
+    (
+        "appearance.font",
+        Type::Choice(&[
+            "system",
+            "noto_sans",
+            "inter",
+            "noto_serif",
+            "jetbrains_mono",
+        ]),
+    ),
+    ("appearance.font_size", Type::Halves(8.0, 14.0)),
+    (
+        "appearance.density",
+        Type::Choice(&["comfortable", "compact"]),
+    ),
+    ("appearance.radius", Type::Number(0, 16)),
+    (
+        "appearance.popup_size",
+        Type::Choice(&["default", "small", "screen", "custom"]),
+    ),
+    ("appearance.screen_percent", Type::Number(40, 90)),
+    ("appearance.popup_width", Type::Number(480, 1600)),
+    ("appearance.popup_height", Type::Number(320, 1000)),
+    ("appearance.translucency", Type::Number(0, 60)),
+    ("appearance.blur", Type::Bool),
 ];
 
 /// Every settable key, plus read-only ones: `index.suggested` (folders to offer that are
@@ -123,6 +165,21 @@ pub fn get(config: &Config, config_path: &Path) -> Dict {
         r.gpu_idle_release_min,
     );
     put(&mut d, "log.usage", config.log.usage);
+    let a = &config.appearance;
+    put(&mut d, "appearance.preset", a.preset.as_str());
+    put(&mut d, "appearance.base", a.base.as_str());
+    put(&mut d, "appearance.scheme", a.scheme.as_str());
+    put(&mut d, "appearance.accent", a.accent.as_str());
+    put(&mut d, "appearance.font", a.font.as_str());
+    put(&mut d, "appearance.font_size", a.font_size);
+    put(&mut d, "appearance.density", a.density.as_str());
+    put(&mut d, "appearance.radius", a.radius);
+    put(&mut d, "appearance.popup_size", a.popup_size.as_str());
+    put(&mut d, "appearance.screen_percent", a.screen_percent);
+    put(&mut d, "appearance.popup_width", a.popup_width);
+    put(&mut d, "appearance.popup_height", a.popup_height);
+    put(&mut d, "appearance.translucency", a.translucency);
+    put(&mut d, "appearance.blur", a.blur);
 
     let taken = |dir: &Path| {
         config
@@ -220,7 +277,35 @@ pub fn validate(config: &Config, previous: &Config) -> Errors {
             errors.insert(format!("exclude.rules.{i}"), format!("规则写法有误：{e:#}"));
         }
     }
+    errors.extend(check_appearance(&config.appearance));
     errors
+}
+
+/// `[appearance]` as written by hand gets the checks of ApplySettings.
+fn check_appearance(a: &AppearanceConfig) -> Errors {
+    let values: [(&str, Value); 14] = [
+        ("preset", a.preset.as_str().into()),
+        ("base", a.base.as_str().into()),
+        ("scheme", a.scheme.as_str().into()),
+        ("accent", a.accent.as_str().into()),
+        ("font", a.font.as_str().into()),
+        ("font_size", a.font_size.into()),
+        ("density", a.density.as_str().into()),
+        ("radius", a.radius.into()),
+        ("popup_size", a.popup_size.as_str().into()),
+        ("screen_percent", a.screen_percent.into()),
+        ("popup_width", a.popup_width.into()),
+        ("popup_height", a.popup_height.into()),
+        ("translucency", a.translucency.into()),
+        ("blur", a.blur.into()),
+    ];
+    values
+        .iter()
+        .filter_map(|(name, value)| {
+            let key = format!("appearance.{name}");
+            to_toml(&key, value).err().map(|message| (key, message))
+        })
+        .collect()
 }
 
 fn to_toml(key: &str, value: &Value) -> Result<Toml, String> {
@@ -242,9 +327,33 @@ fn to_toml(key: &str, value: &Value) -> Result<Toml, String> {
             Some(_) => Err(format!("应在 {min} 到 {max} 之间")),
             None => Err("应为整数".into()),
         },
+        Type::Halves(min, max) => {
+            let n = match value {
+                Value::F64(n) => Some(*n),
+                _ => integer(value).map(|n| n as f64),
+            };
+            match n {
+                Some(n) if (*min..=*max).contains(&n) && (n * 2.0).fract() == 0.0 => {
+                    Ok(Toml::from(n))
+                }
+                Some(_) => Err(format!("应在 {min} 到 {max} 之间，以 0.5 为单位")),
+                None => Err("应为数字".into()),
+            }
+        }
         Type::Choice(choices) => match value {
             Value::Str(s) if choices.contains(&s.as_str()) => Ok(Toml::from(s.as_str())),
             _ => Err(format!("应为 {} 之一", choices.join("、"))),
+        },
+        Type::Color => match value {
+            Value::Str(s) if s.as_str() == "default" => Ok(Toml::from("default")),
+            Value::Str(s)
+                if s.len() == 7
+                    && s.starts_with('#')
+                    && s[1..].chars().all(|c| c.is_ascii_hexdigit()) =>
+            {
+                Ok(Toml::from(s.to_ascii_lowercase()))
+            }
+            _ => Err("应为 default 或 #rrggbb 形式的颜色".into()),
         },
         Type::Path => match value {
             Value::Str(s) if !s.trim().is_empty() => Ok(Toml::from(s.trim())),

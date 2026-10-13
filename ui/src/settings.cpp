@@ -185,6 +185,8 @@ QVariant Settings::normalized(const QString &key, const QVariant &value) const
         return value.toUInt();
     case QMetaType::Int:
         return value.toInt();
+    case QMetaType::Double:
+        return value.toDouble();
     case QMetaType::QString:
         return value.toString();
     case QMetaType::QStringList: {

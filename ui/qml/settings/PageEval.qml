@@ -93,7 +93,7 @@ ColumnLayout {
             text: qsTr("正在评测 %1 … 在后台用查询设备跑，约一两分钟；索引和搜索照常进行。").arg(page.evalRun.progress)
         }
     }
-    Kirigami.InlineMessage {
+    Notice {
         Layout.fillWidth: true
         visible: page.evalRun.error !== ""
         type: Kirigami.MessageType.Error
@@ -221,7 +221,7 @@ ColumnLayout {
         readOnly: true
         wrapMode: Text.WrapAnywhere
         font.family: "monospace"
-        font.pointSize: Kirigami.Theme.smallFont.pointSize
+        font.pointSize: Look.smallFont.pointSize
         text: page.settings.usageLog.length > 0 ? page.settings.usageLog.join("\n") : qsTr("日志是空的。")
     }
 }

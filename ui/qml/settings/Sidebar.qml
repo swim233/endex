@@ -4,6 +4,7 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
+import Endex
 
 // The settings window's categories, a filter, and where the settings live.
 ColumnLayout {
@@ -93,7 +94,7 @@ ColumnLayout {
             textFormat: Text.PlainText
             text: sidebar.configPath
             font.family: "monospace"
-            font.pointSize: Kirigami.Theme.smallFont.pointSize
+            font.pointSize: Look.smallFont.pointSize
             wrapMode: Text.WrapAnywhere
         }
         Hint {

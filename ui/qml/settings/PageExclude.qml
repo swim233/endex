@@ -80,7 +80,7 @@ Kirigami.FormLayout {
         settings: page.settings
         key: "exclude.gitignore"
         text: qsTr("遵守 .gitignore")
-        hint: qsTr("目录里的 .gitignore 和 .ignore 生效；在 git 仓库里也看上级目录的规则（不读主目录本身的）。")
+        hint: qsTr("遵守 .gitignore 和 .ignore 规则")
     }
     ColumnLayout {
         Kirigami.FormData.label: qsTr("内置排除：")
@@ -92,7 +92,7 @@ Kirigami.FormLayout {
             settings: page.settings
             key: "exclude.builtin"
             text: qsTr("排除常见的构建产物和缓存")
-            hint: qsTr("一份内置清单，例如 node_modules、target、.git，以及网页「另存为」附带的 .js、.css、.html。")
+            hint: qsTr("默认的排除清单，包含 node_modules、target、.git")
         }
         PatternList {
             objectName: "builtinList"
@@ -110,8 +110,8 @@ Kirigami.FormLayout {
             Layout.fillWidth: true
             settings: page.settings
             key: "exclude.sensitive"
-            text: qsTr("不读取疑似密钥和凭据的文件")
-            hint: qsTr("命中的文件连内容都不会读取。")
+            text: qsTr("排除疑似密钥和凭据的文件")
+            hint: qsTr("将跳过敏感文件")
         }
         PatternList {
             objectName: "sensitiveList"
@@ -125,7 +125,7 @@ Kirigami.FormLayout {
         settings: page.settings
         key: "exclude.hidden"
         text: qsTr("索引以 . 开头的文件和目录")
-        hint: qsTr("默认关闭。")
+        hint: qsTr("默认关闭")
     }
 
     Kirigami.Separator {
@@ -150,7 +150,7 @@ Kirigami.FormLayout {
             }
         }
         Hint {
-            text: qsTr("超过上限的文档会被跳过，并列在「索引状态」的失败文件里。默认 10。")
+            text: qsTr("超过上限的文档会被跳过")
         }
     }
 

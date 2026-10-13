@@ -44,7 +44,7 @@ RowLayout {
         return "ok"
     }
 
-    spacing: Kirigami.Units.largeSpacing
+    spacing: Look.largeSpacing
 
     Timer {
         id: toastTimer
@@ -52,7 +52,7 @@ RowLayout {
     }
 
     Rectangle {
-        Layout.leftMargin: Kirigami.Units.largeSpacing * 1.5
+        Layout.leftMargin: Look.largeSpacing * 1.5
         Layout.preferredWidth: Kirigami.Units.smallSpacing * 2
         Layout.preferredHeight: Kirigami.Units.smallSpacing * 2
         radius: width / 2
@@ -64,9 +64,9 @@ RowLayout {
         id: stateLabel
 
         textFormat: Text.PlainText
-        Layout.topMargin: Kirigami.Units.smallSpacing * 1.5
-        Layout.bottomMargin: Kirigami.Units.smallSpacing * 1.5
-        font: Kirigami.Theme.smallFont
+        Layout.topMargin: Look.smallSpacing * 1.5
+        Layout.bottomMargin: Look.smallSpacing * 1.5
+        font: Look.smallFont
         text: {
             const s = line.daemon.status
             const i = line.indexState
@@ -119,7 +119,7 @@ RowLayout {
         textFormat: Text.PlainText
         visible: text !== ""
         Layout.maximumWidth: Kirigami.Units.gridUnit * 24
-        font: Kirigami.Theme.smallFont
+        font: Look.smallFont
         color: Kirigami.Theme.negativeTextColor
         elide: Text.ElideMiddle
         text: {
@@ -135,7 +135,7 @@ RowLayout {
     QQC2.Label {
         textFormat: Text.PlainText
         visible: line.showCounts && line.daemon.state === Daemon.Ready
-        font: Kirigami.Theme.smallFont
+        font: Look.smallFont
         text: line.daemon.searching ? qsTr("搜索中…")
             : qsTr("%1 文档 · %2 图片 · %3 s").arg(line.results.docCount).arg(line.results.imageCount)
                 .arg((line.daemon.latency / 1000).toFixed(2))
@@ -144,14 +144,14 @@ RowLayout {
     QQC2.Label {
         textFormat: Text.PlainText
         visible: line.daemon.state === Daemon.Ready && !line.unconfigured
-        font: Kirigami.Theme.smallFont
+        font: Look.smallFont
         text: line.modeLabel
     }
 
     QQC2.Label {
         textFormat: Text.PlainText
         visible: line.daemon.state === Daemon.Ready && !line.unconfigured
-        font: Kirigami.Theme.smallFont
+        font: Look.smallFont
         text: qsTr("查询设备 %1").arg(String(line.daemon.status.query_device ?? "cpu").toUpperCase())
         color: Kirigami.Theme.disabledTextColor
     }
@@ -164,19 +164,19 @@ RowLayout {
         id: toastLabel
 
         textFormat: Text.PlainText
-        Layout.rightMargin: Kirigami.Units.largeSpacing * 1.5
+        Layout.rightMargin: Look.largeSpacing * 1.5
         Layout.maximumWidth: line.width * 0.45
         visible: toastTimer.running
-        font: Kirigami.Theme.smallFont
+        font: Look.smallFont
         color: Kirigami.Theme.positiveTextColor
         elide: Text.ElideMiddle
     }
 
     QQC2.Label {
         textFormat: Text.PlainText
-        Layout.rightMargin: Kirigami.Units.largeSpacing * 1.5
+        Layout.rightMargin: Look.largeSpacing * 1.5
         visible: !toastTimer.running && !notice.visible
-        font: Kirigami.Theme.smallFont
+        font: Look.smallFont
         color: Kirigami.Theme.disabledTextColor
         text: qsTr("↑↓ 选择 · Tab 分组 · PgUp/PgDn 翻页 · ↵ 打开 · Esc 关闭")
     }

@@ -27,6 +27,10 @@ public Q_SLOTS:
     // Types `text` into the field with this objectName, focused as by the user, and presses
     // Enter in a single-line field.
     Q_SCRIPTABLE bool SetText(const QString &objectName, const QString &text);
+    // Sets a slider's or spin box's value as a drag or an edit would.
+    Q_SCRIPTABLE bool SetValue(const QString &objectName, double value);
+    // Scrolls a ScrollView to `fraction` (0 top, 1 bottom) of its content.
+    Q_SCRIPTABLE bool Scroll(const QString &objectName, double fraction);
     // Closes the settings window as its close button would.
     Q_SCRIPTABLE void CloseSettings();
 

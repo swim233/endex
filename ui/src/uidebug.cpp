@@ -80,6 +80,30 @@ bool UiDebug::SetText(const QString &objectName, const QString &text)
     return true;
 }
 
+bool UiDebug::SetValue(const QString &objectName, double value)
+{
+    QObject *item = find(objectName);
+    if (!item)
+        return false;
+    item->setProperty("value", value);
+    for (const char *signal : {"moved()", "valueModified()"}) {
+        if (item->metaObject()->indexOfSignal(signal) >= 0)
+            QMetaObject::invokeMethod(item, QByteArray(signal).chopped(2).constData());
+    }
+    return true;
+}
+
+bool UiDebug::Scroll(const QString &objectName, double fraction)
+{
+    QObject *view = find(objectName);
+    auto *flickable = view ? view->property("contentItem").value<QQuickItem *>() : nullptr;
+    if (!flickable)
+        return false;
+    const double range = flickable->property("contentHeight").toDouble() - flickable->height();
+    flickable->setProperty("contentY", std::max(0.0, range * fraction));
+    return true;
+}
+
 void UiDebug::CloseSettings()
 {
     if (m_settings->window())

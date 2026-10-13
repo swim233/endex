@@ -13,6 +13,8 @@ use endex_core::exclude::{BUILTIN, SENSITIVE, check_rule};
 use toml_edit::Value as Toml;
 use zbus::zvariant::{OwnedValue, Value};
 
+use crate::bus::put;
+
 pub type Dict = HashMap<String, OwnedValue>;
 /// Field-level problems, by key; `""` for the file as a whole. Messages are for the user.
 pub type Errors = BTreeMap<String, String>;
@@ -447,9 +449,4 @@ fn strings(value: &Value) -> Option<Vec<String>> {
 
 fn paths(paths: &[PathBuf]) -> Vec<String> {
     paths.iter().map(|p| tilde(p)).collect()
-}
-
-fn put<'a>(d: &mut Dict, key: &str, value: impl Into<Value<'a>>) {
-    let value = OwnedValue::try_from(value.into()).expect("no file descriptors");
-    d.insert(key.to_owned(), value);
 }

@@ -1,5 +1,6 @@
 //! LanceDB table of searchable rows: one per document chunk, one per image.
 
+use std::borrow::Cow;
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
@@ -336,8 +337,16 @@ fn schema() -> SchemaRef {
     ]))
 }
 
+/// Every row enters the table here, so this is where NUL is kept out of it, whatever the
+/// format or OCR produced: D-Bus strings must not contain it.
 fn record_batch(rows: &[Row]) -> Result<RecordBatch> {
-    let strings = |f: fn(&Row) -> &str| Arc::new(StringArray::from_iter_values(rows.iter().map(f)));
+    let strings = |f: fn(&Row) -> &str| {
+        let values = rows.iter().map(|row| match f(row) {
+            s if s.contains('\0') => Cow::Owned(s.replace('\0', "")),
+            s => Cow::Borrowed(s),
+        });
+        Arc::new(StringArray::from_iter_values(values))
+    };
     let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
         rows.iter()
             .map(|r| Some(r.vector.iter().copied().map(Some).collect::<Vec<_>>())),

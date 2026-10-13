@@ -3,6 +3,7 @@
 //! serves that index read-only instead and picks up `endex index` runs without a restart.
 
 mod app;
+mod bus;
 mod indexer;
 mod power;
 mod priority;

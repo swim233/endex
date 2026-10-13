@@ -4,9 +4,10 @@ use std::fs;
 
 use endex_core::Kind;
 use endex_core::search::{ChunkView, Hit, highlights};
-use zbus::zvariant::{OwnedValue, Value};
+use zbus::zvariant::Value;
 
 use super::{Dict, Error};
+use crate::bus::{self, put};
 use crate::state::IndexState;
 
 pub(super) fn index_state_dict(s: &IndexState) -> Dict {
@@ -25,10 +26,12 @@ pub(super) fn index_state_dict(s: &IndexState) -> Dict {
     d
 }
 
+/// Highlights are found in the text as sent.
 pub(super) fn preview_dict(view: ChunkView, terms: &[String]) -> Dict {
     let row = view.row;
+    let text = bus::text(row.text);
     let mut d = Dict::new();
-    put(&mut d, "highlights", spans(&row.text, terms));
+    put(&mut d, "highlights", spans(&text, terms));
     put(&mut d, "id", row.id);
     put(&mut d, "kind", row.kind.as_str());
     put(&mut d, "title", row.title);
@@ -43,21 +46,23 @@ pub(super) fn preview_dict(view: ChunkView, terms: &[String]) -> Dict {
             put(&mut d, "next", view.next.unwrap_or_default());
         }
         Kind::Image => {
-            put(&mut d, "ocr", !row.text.trim().is_empty());
+            put(&mut d, "ocr", !text.trim().is_empty());
             put_dimensions(&mut d, &row.path);
         }
     }
-    put(&mut d, "text", row.text);
+    put(&mut d, "text", text);
     put(&mut d, "path", row.path);
     d
 }
 
+/// Highlights are found in the snippet as sent.
 pub(super) fn hit_dict(hit: Hit, terms: &[String]) -> Dict {
+    let snippet = bus::text(hit.snippet);
     let mut d = Dict::new();
-    put(&mut d, "highlights", spans(&hit.snippet, terms));
+    put(&mut d, "highlights", spans(&snippet, terms));
     put(&mut d, "size", file_size(&hit.path));
     if hit.kind == Kind::Image {
-        put(&mut d, "ocr", !hit.snippet.is_empty());
+        put(&mut d, "ocr", !snippet.is_empty());
         put_dimensions(&mut d, &hit.path);
     }
     if let Some(score) = hit.vector_score {
@@ -72,7 +77,7 @@ pub(super) fn hit_dict(hit: Hit, terms: &[String]) -> Dict {
     put(&mut d, "path", hit.path);
     put(&mut d, "title", hit.title);
     put(&mut d, "location", hit.location);
-    put(&mut d, "snippet", hit.snippet);
+    put(&mut d, "snippet", snippet);
     put(&mut d, "mtime", hit.mtime / 1_000_000_000);
     put(&mut d, "score", f64::from(hit.score));
     d
@@ -109,11 +114,6 @@ fn put_dimensions(d: &mut Dict, path: &str) {
     }
 }
 
-pub(super) fn put<'a>(d: &mut Dict, key: &str, value: impl Into<Value<'a>>) {
-    let value = OwnedValue::try_from(value.into()).expect("no file descriptors");
-    d.insert(key.to_owned(), value);
-}
-
 /// Accepts any integer type: Qt sends `int` as `i`, busctl as whatever it is told.
 pub(super) fn opt_u32(opts: &Dict, key: &str) -> Result<Option<u32>, Error> {
     let Some(value) = opts.get(key) else {
@@ -132,4 +132,74 @@ pub(super) fn opt_u32(opts: &Dict, key: &str) -> Result<Option<u32>, Error> {
     u32::try_from(n)
         .map(Some)
         .map_err(|_| Error::InvalidArgs(format!("{key} out of range: {n}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use zbus::DBusError;
+    use zbus::message::Message;
+
+    use super::*;
+
+    fn strings(value: &Value<'_>, out: &mut Vec<String>) {
+        match value {
+            Value::Str(s) => out.push(s.to_string()),
+            Value::Value(inner) => strings(inner, out),
+            Value::Array(a) => a.iter().for_each(|v| strings(v, out)),
+            Value::Dict(d) => d.iter().for_each(|(k, v)| {
+                strings(k, out);
+                strings(v, out);
+            }),
+            Value::Structure(s) => s.fields().iter().for_each(|v| strings(v, out)),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn no_nul_reaches_the_bus_and_highlights_fit_the_sent_text() {
+        let hit = Hit {
+            id: "/n.txt#0".into(),
+            path: "/n.txt".into(),
+            kind: Kind::Doc,
+            title: "n\0.txt".into(),
+            location: "lines 1-2".into(),
+            snippet: "\0\0zip\0 kwzipzq part\0".into(),
+            score: 1.0,
+            vector_score: None,
+            keyword: None,
+            mtime: 0,
+        };
+        let mut d = hit_dict(hit, &["kwzipzq".into()]);
+        let snippet: String = d["snippet"].downcast_ref::<&str>().unwrap().into();
+        assert_eq!(snippet, "\u{FFFD}\u{FFFD}zip\u{FFFD} kwzipzq part\u{FFFD}");
+        let spans: Vec<(u32, u32)> = d["highlights"].try_clone().unwrap().try_into().unwrap();
+        let chars: Vec<char> = snippet.chars().collect();
+        let (start, len) = (spans[0].0 as usize, spans[0].1 as usize);
+        assert_eq!(
+            chars[start..start + len].iter().collect::<String>(),
+            "kwzipzq"
+        );
+
+        put(&mut d, "list", vec!["c\0", "d"]);
+        put(&mut d, "errors", HashMap::from([("k\0", "v\0")]));
+        let mut inner = Dict::new();
+        put(&mut inner, "path", "e\0");
+        put(&mut d, "nested", vec![inner]);
+        let mut all = Vec::new();
+        strings(&Value::from(d), &mut all);
+        assert!(all.contains(&"n\u{FFFD}.txt".into()) && all.contains(&"v\u{FFFD}".into()));
+        assert!(all.iter().all(|s| !s.contains('\0')), "{all:?}");
+
+        let call = Message::method_call("/org/endex/Daemon", "Search")
+            .unwrap()
+            .build(&())
+            .unwrap();
+        let reply = Error::Failed("bad\0rule".into())
+            .create_reply(&call.header())
+            .unwrap();
+        let text: String = reply.body().deserialize().unwrap();
+        assert_eq!(text, "bad\u{FFFD}rule");
+    }
 }

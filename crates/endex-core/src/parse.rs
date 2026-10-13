@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use quick_xml::XmlVersion;
 use quick_xml::events::Event;
 
@@ -44,6 +44,9 @@ const PLAIN_EXTENSIONS: &[&str] = &[
 /// Plain-text window size, in lines.
 const WINDOW_LINES: usize = 60;
 
+/// A NUL in this many first bytes marks a file as binary (git's test).
+const BINARY_PROBE: usize = 8000;
+
 impl DocFormat {
     pub fn from_path(path: &Path) -> Option<Self> {
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -56,27 +59,58 @@ impl DocFormat {
     }
 }
 
-/// Parses a document; lines (or paragraphs) of packed binary data come out blank, and long
-/// base64 runs cut, in headings and the title too (see [`packed`]).
+/// Parses a document; plain and Markdown files of binary data fail (see [`decode`]). NUL is
+/// removed (a damaged region of a log, a raw NUL in a docx), lines (or paragraphs) of packed
+/// binary data come out blank and long base64 runs are cut, in headings and the title too (see
+/// [`packed`]).
 pub fn parse(format: DocFormat, path: &Path, bytes: &[u8]) -> Result<Parsed> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let mut parsed = match format {
-        DocFormat::Markdown => markdown(&String::from_utf8_lossy(bytes), &name),
-        DocFormat::Plain => plain(&String::from_utf8_lossy(bytes), &name),
+        DocFormat::Markdown => markdown(&decode(bytes)?, &name),
+        DocFormat::Plain => plain(&decode(bytes)?, &name),
         DocFormat::Docx => docx(bytes, &name)?,
     };
     for section in &mut parsed.sections {
-        packed::clean(&mut section.heading);
-        section.units.iter_mut().for_each(packed::clean);
+        clean(&mut section.heading);
+        section.units.iter_mut().for_each(clean);
     }
-    packed::clean(&mut parsed.title);
+    clean(&mut parsed.title);
     if parsed.title.trim().is_empty() {
         parsed.title = name;
     }
     Ok(parsed)
+}
+
+fn clean(text: &mut String) {
+    text.retain(|c| c != '\0');
+    packed::clean(text);
+}
+
+/// Plain or Markdown bytes as text: UTF-16 with a byte order mark is decoded, anything else
+/// read as UTF-8 (without its byte order mark). Binary data fails.
+fn decode(bytes: &[u8]) -> Result<String> {
+    let utf16 = match bytes {
+        [0xFF, 0xFE, rest @ ..] => Some(utf16(rest, u16::from_le_bytes)),
+        [0xFE, 0xFF, rest @ ..] => Some(utf16(rest, u16::from_be_bytes)),
+        _ => None,
+    };
+    let utf8 = bytes.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(bytes);
+    let probe = utf16.as_ref().map_or(utf8, |text| text.as_bytes());
+    ensure!(
+        !probe[..probe.len().min(BINARY_PROBE)].contains(&0),
+        "binary data, not text (a NUL byte in the first {BINARY_PROBE} bytes)"
+    );
+    Ok(utf16.unwrap_or_else(|| String::from_utf8_lossy(utf8).into_owned()))
+}
+
+fn utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> String {
+    let units = bytes.as_chunks().0.iter().map(|&pair| unit(pair));
+    char::decode_utf16(units)
+        .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
 }
 
 pub fn markdown(text: &str, fallback_title: &str) -> Parsed {
@@ -304,6 +338,36 @@ mod tests {
         );
         assert_eq!(parsed.sections[1].units[1], "```");
         assert_eq!(parsed.sections[1].units[2], "# not a heading");
+    }
+
+    #[test]
+    fn binary_text_fails_late_nul_is_dropped_byte_order_marks_are_read() {
+        let path = Path::new("a.txt");
+        let lines = |p: Parsed| {
+            p.sections
+                .into_iter()
+                .flat_map(|s| s.units)
+                .collect::<Vec<_>>()
+        };
+        let error = parse(DocFormat::Plain, path, b"PK\x03\x04\x14\0\0\0 kwzipzq").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "binary data, not text (a NUL byte in the first 8000 bytes)"
+        );
+        let mut late = "log line\n".repeat(900).into_bytes();
+        late.extend(b"bad \0\0region\n");
+        let parsed = parse(DocFormat::Markdown, path, &late).unwrap();
+        assert_eq!(lines(parsed).last().unwrap(), "bad region");
+        let text = "笔记 kw\r\n第二行\r\n";
+        let le: Vec<u8> = text.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        let be: Vec<u8> = text.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        for (bom, units) in [([0xFF, 0xFE], le), ([0xFE, 0xFF], be)] {
+            let bytes = [&bom[..], &units].concat();
+            let parsed = parse(DocFormat::Plain, path, &bytes).unwrap();
+            assert_eq!(lines(parsed), ["笔记 kw", "第二行"]);
+        }
+        let bom = "\u{FEFF}# 标题\n正文".as_bytes();
+        assert_eq!(parse(DocFormat::Markdown, path, bom).unwrap().title, "标题");
     }
 
     #[test]

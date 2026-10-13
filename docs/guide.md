@@ -231,7 +231,8 @@ the manifest it was last listed in (by absolute path); files that disappear from
 are removed on its next run. Renaming or moving a manifest file therefore orphans its entries:
 index the new manifest and `--rebuild`, or keep the old path. Files that failed are retried on
 every run; failing to load a model aborts the run. Documents over `index.max_document_mb`
-(default 10) are skipped and reported as errors.
+(default 10) are skipped and reported as errors, and so are plain-text and Markdown files that
+hold binary data (`binary data, not text …`, see "Text decoding" in Design notes).
 
 `queries.toml`:
 
@@ -250,7 +251,8 @@ Ranks are counted inside the result group (documents or images) that contains th
 crates/endex-core   library
   embed/            Embedder trait, prefixes, LiteRT-LM FFI (libloading, RTLD_LOCAL)
   ocr.rs            Ocr trait, PP-OCRv6 via oar-ocr (ONNX Runtime, CPU), noise filter
-  parse.rs          Markdown / plain text / docx → sections of numbered lines or paragraphs
+  parse.rs          Markdown / plain text / docx → sections of numbered lines or paragraphs;
+                    UTF-16 decoding, binary text files
   packed.rs         packed binary data (lookup tables, base64) dropped from document lines
   chunk.rs          sections → chunks of ≤ 480 model tokens
   terms.rs          keyword analysis (jieba + identifier splitting + file-name prefixes)
@@ -266,7 +268,9 @@ crates/endex-core   library
   eval.rs, sample.rs
 crates/endex-cli    the `endex` binary (eval_sets.rs: `endex eval --sets`)
 crates/endexd       the daemon
-  service/          D-Bus interface org.endex.Daemon1 (mod.rs) and its reply dictionaries
+  service/          D-Bus interface org.endex.Daemon1 (mod.rs), its reply dictionaries and
+                    error replies
+  bus.rs            the guard on every string sent on D-Bus (NUL → U+FFFD)
   worker.rs         search thread (warm query model)
   indexer/          indexer thread: loop and state (mod.rs), scans, reconciles, devices and
                     writes (files.rs), queue and ETA (queue.rs), config and identity changes
@@ -356,17 +360,17 @@ max_document_mb = 10
   rebuild restarts it. `Rebuild` while indexing is paused (battery, the user) waits, with the
   old index searchable, until the pause ends or 「本次继续」 (`IndexState.rebuild_pending`).
 - **Text pipeline version:** the catalog also records the version of the document text
-  pipeline (`text_pipeline` in its meta table; 1 when missing, i.e. before M3 fix 1; now 2,
-  which drops packed data, see Design notes). When it differs, the writer processes every
-  indexed document again in the background after starting: it records the new version together
-  with marks that make the next scan see each document as changed, so the usual scan, the usual
-  bulk/incremental device choice and the usual write cadence do the work, and an interrupted
-  run resumes instead of starting over. Search answers from the old rows until each file's are
-  replaced; nothing is cleared and `needs_rebuild` is not set. Images are not processed again
-  (OCR is slow). `endex index` records the current version on a new or `--rebuild` index and
-  otherwise leaves the version and unchanged files alone, so an index built from manifests
-  (the eval sets) changes only with `--rebuild`; `endex status` shows the version. A read-only
-  endexd does not look at it.
+  pipeline (`text_pipeline` in its meta table; 1 when missing, i.e. before M3 fix 1; 2 drops
+  packed data; now 3, where binary text files fail and NUL is removed; see Design notes). When
+  it differs, the writer processes every indexed document again in the background after
+  starting: it records the new version together with marks that make the next scan see each
+  document as changed, so the usual scan, the usual bulk/incremental device choice and the
+  usual write cadence do the work, and an interrupted run resumes instead of starting over.
+  Search answers from the old rows until each file's are replaced; nothing is cleared and
+  `needs_rebuild` is not set. Images are not processed again (OCR is slow). `endex index`
+  records the current version on a new or `--rebuild` index and otherwise leaves the version
+  and unchanged files alone, so an index built from manifests (the eval sets) changes only
+  with `--rebuild`; `endex status` shows the version. A read-only endexd does not look at it.
 - **Writes and keyword index:** small changes are written within a second, bulk work every
   10 s or every 4,096 staged rows (each write adds a table fragment; many small ones slow
   searches down), with a compaction every 30 bulk writes. A new index gets its keyword index
@@ -400,7 +404,10 @@ something fail with `org.endex.Daemon1.Error.ReadOnly`.
 
 ### D-Bus interface `org.endex.Daemon1` (version 2)
 
-`Search`, `Preview` and `Status` are unchanged from version 1 (Status has more keys).
+`Search`, `Preview` and `Status` are unchanged from version 1 (Status has more keys). D-Bus
+strings cannot hold U+0000 (the bus disconnects a sender that tries), so every string endexd
+sends, error messages included, has each NUL replaced by U+FFFD; highlight ranges are counted
+on that text.
 
 | Member | Signature | |
 |---|---|---|
@@ -504,6 +511,17 @@ a fake power state and adds `org.endex.DaemonDebug1.SetOnBattery(b)` on the same
 - **Chunks.** At most 480 model tokens including the heading line (a long heading path is cut
   in the chunk text but kept whole in `location`); over-long lines are split at sentence or
   word breaks using one tokenization of the line.
+- **Text decoding.** Plain-text and Markdown files are read as UTF-8 (invalid bytes become
+  U+FFFD; a leading byte order mark, as old Notepad wrote, is dropped, so a `# heading` on the
+  first line is still the title), or as UTF-16 when they start with a byte order mark
+  (Notepad's 「Unicode」, common for old Chinese .txt and .csv files). A NUL byte in the first
+  8000 bytes (git's test) means binary data, such as an EPUB or zip renamed to `.txt`: the file
+  fails with `binary data, not text (a NUL byte in the first 8000 bytes)` in the failed files,
+  like an over-size document, and its old rows go. A NUL further on (a damaged region of a log,
+  a raw NUL in a docx) is removed and the file is indexed; whatever a format or OCR yields, no
+  NUL is written to the index. Other encodings are not detected: UTF-16 without a byte order
+  mark usually fails as binary data (every ASCII character, line breaks included, has a zero
+  byte), GBK reads as garbled text.
 - **Packed data.** Before chunking, each line (or docx paragraph) of a document is checked for
   packed binary data, such as the HTML-entity decode table that JS bundles inline as one string
   literal: its code points fall into letter ranges, so the analyzer found words such as `cute`

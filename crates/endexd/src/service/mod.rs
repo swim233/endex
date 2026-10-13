@@ -10,12 +10,13 @@ use endex_core::Kind;
 use endex_core::catalog::{Catalog, Identity};
 use endex_core::config::{Config, tilde};
 use endex_core::exclude::{Filter, Reason};
-use endex_core::search::{Cancelled, Hit, Limits, Mode, Results};
+use endex_core::search::{Hit, Limits, Mode, Results};
 use zbus::message::Header;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedValue;
 
 use crate::app::App;
+use crate::bus::{self, put};
 use crate::indexer::Command;
 use crate::settings;
 use crate::state::lock;
@@ -23,8 +24,11 @@ use crate::usage::{Entry, UsageLog};
 use crate::worker::Preview;
 
 mod dicts;
+mod error;
 
-use dicts::{hit_dict, index_state_dict, opt_u32, preview_dict, put, truncated};
+pub use error::Error;
+
+use dicts::{hit_dict, index_state_dict, opt_u32, preview_dict, truncated};
 
 pub const NAME: &str = "org.endex.Daemon1";
 pub const PATH: &str = "/org/endex/Daemon";
@@ -38,30 +42,6 @@ const MAX_LIMIT: u32 = 1000;
 pub const MAX_QUERY_CHARS: usize = 512;
 
 type Dict = HashMap<String, OwnedValue>;
-
-#[derive(Debug, zbus::DBusError)]
-#[zbus(prefix = "org.endex.Daemon1.Error")]
-pub enum Error {
-    #[zbus(error)]
-    ZBus(zbus::Error),
-    /// A newer query from the same client superseded this one.
-    Cancelled(String),
-    InvalidArgs(String),
-    NotFound(String),
-    Failed(String),
-    /// The daemon serves an index in read-only mode (`--data-dir`) and changes nothing.
-    ReadOnly(String),
-}
-
-impl From<anyhow::Error> for Error {
-    fn from(error: anyhow::Error) -> Self {
-        if error.downcast_ref::<Cancelled>().is_some() {
-            Error::Cancelled(error.to_string())
-        } else {
-            Error::Failed(format!("{error:#}"))
-        }
-    }
-}
 
 pub struct Daemon {
     app: Arc<App>,
@@ -133,6 +113,8 @@ impl Daemon {
     }
 }
 
+/// Reply strings go through `bus::put` (dictionaries) or `bus::text` (bare strings), and error
+/// text through [`Error`]: a NUL in any of them gets endexd disconnected from the bus.
 #[zbus::interface(name = "org.endex.Daemon1")]
 impl Daemon {
     /// Documents and images, ranked separately. `opts`: `limit_docs`, `limit_images`,
@@ -516,9 +498,9 @@ impl Daemon {
         let Some(log) = self.enabled_usage_log() else {
             return Vec::new();
         };
-        tokio::task::spawn_blocking(move || log.recent_queries(limit as usize))
-            .await
-            .unwrap_or_default()
+        let queries = tokio::task::spawn_blocking(move || log.recent_queries(limit as usize));
+        let queries = queries.await.unwrap_or_default();
+        queries.into_iter().map(bus::text).collect()
     }
 
     /// The last `limit` usage-log lines (JSON), oldest first.
@@ -528,9 +510,9 @@ impl Daemon {
             return Vec::new();
         }
         let log = UsageLog::new(&config.usage_log_path());
-        tokio::task::spawn_blocking(move || log.tail(limit as usize))
-            .await
-            .unwrap_or_default()
+        let lines = tokio::task::spawn_blocking(move || log.tail(limit as usize));
+        let lines = lines.await.unwrap_or_default();
+        lines.into_iter().map(bus::text).collect()
     }
 
     async fn clear_usage_log(&self) -> Result<(), Error> {

@@ -27,8 +27,9 @@ pub const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp"];
 /// Version of the document text pipeline (parsing, the packed-data filter, chunking); bump it
 /// when documents already indexed should go through a change. A new or emptied index records
 /// it; endexd processes the documents of an index with another version again, `endex index`
-/// does not (`--rebuild` does). 1: M1–M3; 2: packed data dropped.
-pub const TEXT_PIPELINE: u32 = 2;
+/// does not (`--rebuild` does). 1: M1–M3; 2: packed data dropped; 3: binary text files fail,
+/// NUL removed, byte order marks read.
+pub const TEXT_PIPELINE: u32 = 3;
 
 const FLUSH_ROWS: usize = 256;
 const FLUSH_FILES: usize = 64;
